@@ -1,0 +1,296 @@
+/* ----------------------------------------------------------
+   Base print helpers
+---------------------------------------------------------- */
+
+.print-only {
+  display: none;
+}
+
+.no-print {
+  display: initial;
+}
+
+.print-avoid-break {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-layout-board {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-sticker {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.print-sticker-grid {
+  display: grid;
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (min-width: 768px) {
+  .print-sticker-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .print-sticker-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* ----------------------------------------------------------
+   Print styles
+---------------------------------------------------------- */
+
+@media print {
+  @page {
+    size: A4;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    font-family: Arial, Helvetica, sans-serif !important;
+    font-size: 11px !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .print-page-break {
+    page-break-before: always !important;
+    break-before: page !important;
+  }
+
+  .print-avoid-break,
+  .print-layout-board,
+  .print-sticker {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-full-width {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  .print-shadow-none {
+    box-shadow: none !important;
+  }
+
+  .print-border {
+    border: 1px solid #000 !important;
+  }
+
+  .print-bg-white {
+    background: #ffffff !important;
+  }
+
+  .print-text-black {
+    color: #000000 !important;
+  }
+
+  .print-small-text {
+    font-size: 10px !important;
+  }
+
+  /* ------------------------------------------------------
+     Generic cards / sections
+  ------------------------------------------------------ */
+
+  .rounded-xl,
+  .rounded-lg,
+  .rounded {
+    border-radius: 0 !important;
+  }
+
+  .shadow,
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg,
+  .shadow-xl,
+  .shadow-2xl {
+    box-shadow: none !important;
+  }
+
+  .bg-gray-50,
+  .bg-blue-50,
+  .bg-green-50,
+  .bg-amber-50,
+  .bg-purple-50,
+  .bg-red-50,
+  .bg-white {
+    background: #ffffff !important;
+  }
+
+  .border,
+  .border-b,
+  .border-t,
+  .border-l,
+  .border-r {
+    border-color: #000000 !important;
+  }
+
+  /* ------------------------------------------------------
+     Tables
+  ------------------------------------------------------ */
+
+  table,
+  .print-table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto !important;
+  }
+
+  thead {
+    display: table-header-group !important;
+  }
+
+  tr {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  th,
+  td {
+    border: 1px solid #000 !important;
+    padding: 5px !important;
+    font-size: 10px !important;
+    color: #000 !important;
+    background: #fff !important;
+    vertical-align: top !important;
+  }
+
+  th {
+    font-weight: 700 !important;
+  }
+
+  /* ------------------------------------------------------
+     Layout canvas
+  ------------------------------------------------------ */
+
+  .overflow-auto {
+    overflow: visible !important;
+  }
+
+  .relative {
+    overflow: visible !important;
+  }
+
+  .absolute {
+    print-color-adjust: exact !important;
+    -webkit-print-color-adjust: exact !important;
+  }
+
+  /* ------------------------------------------------------
+     Sticker printing
+  ------------------------------------------------------ */
+
+  .print-sticker-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    gap: 10px !important;
+    width: 100% !important;
+  }
+
+  .print-sticker {
+    border: 1px solid #000 !important;
+    border-radius: 4px !important;
+    padding: 8px !important;
+    background: #fff !important;
+    min-height: 180px !important;
+  }
+
+  img {
+    max-width: 100% !important;
+  }
+
+  /* ------------------------------------------------------
+     Utility spacing cleanup
+  ------------------------------------------------------ */
+
+  .p-6,
+  .p-4,
+  .p-3,
+  .p-2 {
+    padding: 8px !important;
+  }
+
+  .px-3,
+  .px-4,
+  .px-6 {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+
+  .py-2,
+  .py-3,
+  .py-4 {
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+  }
+
+  .mt-8,
+  .mt-6,
+  .mt-4,
+  .mt-3,
+  .mt-2 {
+    margin-top: 8px !important;
+  }
+
+  .mb-6,
+  .mb-4,
+  .mb-3,
+  .mb-2 {
+    margin-bottom: 8px !important;
+  }
+
+  .space-y-6 > * + *,
+  .space-y-4 > * + *,
+  .space-y-3 > * + *,
+  .space-y-2 > * + * {
+    margin-top: 8px !important;
+  }
+
+  /* ------------------------------------------------------
+     Typography
+  ------------------------------------------------------ */
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p,
+  span,
+  div {
+    color: #000 !important;
+  }
+
+  .text-gray-500,
+  .text-gray-600,
+  .text-blue-700,
+  .text-green-700,
+  .text-amber-700,
+  .text-purple-700,
+  .text-red-700 {
+    color: #000 !important;
+  }
+}

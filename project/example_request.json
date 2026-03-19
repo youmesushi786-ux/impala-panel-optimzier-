@@ -1,0 +1,34 @@
+{
+  "client_supply": false,
+  "board_type": "Timsales",
+  "color": "White Oak",
+  "panels": [
+    {
+      "width": 400,
+      "length": 600,
+      "quantity": 5,
+      "edge_left": true,
+      "edge_right": true,
+      "edge_top": false,
+      "edge_bottom": true
+    },
+    {
+      "width": 300,
+      "length": 800,
+      "quantity": 3,
+      "edge_left": true,
+      "edge_right": true,
+      "edge_top": true,
+      "edge_bottom": true
+    },
+    {
+      "width": 200,
+      "length": 500,
+      "quantity": 2,
+      "edge_left": false,
+      "edge_right": false,
+      "edge_top": false,
+      "edge_bottom": false
+    }
+  ]
+}

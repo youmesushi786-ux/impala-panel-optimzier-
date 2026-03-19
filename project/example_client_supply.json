@@ -1,0 +1,26 @@
+{
+  "client_supply": true,
+  "client_board_qty": 3,
+  "board_type": "Timsales",
+  "color": "Mahogany",
+  "panels": [
+    {
+      "width": 500,
+      "length": 700,
+      "quantity": 4,
+      "edge_left": true,
+      "edge_right": true,
+      "edge_top": false,
+      "edge_bottom": false
+    },
+    {
+      "width": 350,
+      "length": 450,
+      "quantity": 6,
+      "edge_left": false,
+      "edge_right": false,
+      "edge_top": true,
+      "edge_bottom": true
+    }
+  ]
+}
