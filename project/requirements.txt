@@ -5,3 +5,5 @@ reportlab
 python-multipart
 python-dotenv
 alembic
+qrcode
+pillow
