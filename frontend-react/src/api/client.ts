@@ -33,6 +33,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  checkHealth: () =>
+    request<{ status: string; timestamp?: string; version?: string }>('/health'),
+
   optimize: (payload: BackendCuttingRequest) =>
     request<any>('/api/optimize', { method: 'POST', body: JSON.stringify(payload) }),
 
