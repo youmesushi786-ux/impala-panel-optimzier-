@@ -42,6 +42,7 @@ logger = logging.getLogger("panelpro")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+REQUIRE_ADMIN_API_KEY = os.getenv("REQUIRE_ADMIN_API_KEY", "false").lower() == "true"
 FRONTEND_PUBLIC_URL = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:5173").rstrip("/")
 
 app = FastAPI(title="PanelPro - Cutting Optimizer")
@@ -77,8 +78,14 @@ def get_db():
 
 
 def require_admin_api_key(x_api_key: str | None):
-    if ADMIN_API_KEY and x_api_key != ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    if not REQUIRE_ADMIN_API_KEY:
+        return
+
+    if not x_api_key:
+        raise HTTPException(status_code=403, detail="Missing admin API key")
+
+    if x_api_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid admin API key")
 
 
 @app.exception_handler(RequestValidationError)
