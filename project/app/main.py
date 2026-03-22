@@ -43,7 +43,6 @@ logging.basicConfig(
 
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 REQUIRE_ADMIN_API_KEY = os.getenv("REQUIRE_ADMIN_API_KEY", "false").lower() == "true"
-FRONTEND_PUBLIC_URL = os.getenv("FRONTEND_PUBLIC_URL", "http://localhost:5173").rstrip("/")
 
 app = FastAPI(title="PanelPro - Cutting Optimizer")
 Base.metadata.create_all(bind=engine)
@@ -51,24 +50,27 @@ Base.metadata.create_all(bind=engine)
 if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
-_allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
-if _allowed_origins_env:
-    origins = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
-else:
-    origins = [
+
+def parse_allowed_origins() -> list[str]:
+    env_value = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if env_value:
+        return [origin.strip().rstrip("/") for origin in env_value.split(",") if origin.strip()]
+    return [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://impala-panel-optimzier.onrender.com",
     ]
 
-logger.info(f"Allowed CORS origins: {origins}")
-logger.info(f"Require admin API key: {REQUIRE_ADMIN_API_KEY}")
+
+origins = parse_allowed_origins()
+logger.info("Allowed CORS origins: %s", origins)
+logger.info("Require admin API key: %s", REQUIRE_ADMIN_API_KEY)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_credentials=False,
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -95,9 +97,27 @@ def require_admin_api_key(x_api_key: str | None):
         raise HTTPException(status_code=403, detail="Invalid admin API key")
 
 
+def serialize_tracking(item: StickerTracking) -> Dict[str, Any]:
+    return {
+        "serial_number": item.serial_number,
+        "report_id": item.report_id,
+        "panel_label": item.panel_label,
+        "status": item.status,
+        "qr_url": item.qr_url,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+        "board_number": item.board_number,
+    }
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled server error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -198,11 +218,7 @@ def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSumm
 
 def seed_sticker_tracking(db: Session, report_id: str, stickers):
     for s in stickers:
-        existing = (
-            db.query(StickerTracking)
-            .filter(StickerTracking.serial_number == s.serial_number)
-            .first()
-        )
+        existing = db.query(StickerTracking).filter(StickerTracking.serial_number == s.serial_number).first()
         if existing:
             continue
 
@@ -310,23 +326,11 @@ async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
 
 @app.get("/api/tracking/{serial_number}", response_model=StickerTrackingResponse)
 async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
+    item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
     if not item:
         raise HTTPException(status_code=404, detail="Tracking label not found")
 
-    return StickerTrackingResponse(
-        serial_number=item.serial_number,
-        report_id=item.report_id,
-        panel_label=item.panel_label,
-        status=item.status,
-        qr_url=item.qr_url,
-        updated_at=item.updated_at,
-        board_number=item.board_number,
-    )
+    return StickerTrackingResponse(**serialize_tracking(item))
 
 
 @app.post("/api/tracking/{serial_number}/status")
@@ -336,37 +340,31 @@ async def update_tracking_status(
     db: Session = Depends(get_db),
     x_api_key: str | None = Header(default=None),
 ):
-    require_admin_api_key(x_api_key)
+    try:
+        require_admin_api_key(x_api_key)
 
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Tracking label not found")
+        item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Tracking label not found")
 
-    new_status = payload.get("status")
-    if new_status not in {"in_store", "out_for_delivery", "delivered"}:
-        raise HTTPException(status_code=400, detail="Invalid status")
+        new_status = payload.get("status")
+        if new_status not in {"in_store", "out_for_delivery", "delivered"}:
+            raise HTTPException(status_code=400, detail="Invalid status")
 
-    item.status = new_status
-    item.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(item)
+        item.status = new_status
+        item.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(item)
 
-    return {
-        "status": "ok",
-        "tracking": {
-            "serial_number": item.serial_number,
-            "report_id": item.report_id,
-            "panel_label": item.panel_label,
-            "status": item.status,
-            "qr_url": item.qr_url,
-            "updated_at": item.updated_at.isoformat(),
-            "board_number": item.board_number,
-        },
-    }
+        return {
+            "status": "ok",
+            "tracking": serialize_tracking(item),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to update tracking status for %s", serial_number)
+        raise HTTPException(status_code=500, detail=f"Tracking status update failed: {str(e)}")
 
 
 @app.post("/api/tracking/{serial_number}/advance")
@@ -375,36 +373,30 @@ async def advance_tracking_status(
     db: Session = Depends(get_db),
     x_api_key: str | None = Header(default=None),
 ):
-    require_admin_api_key(x_api_key)
+    try:
+        require_admin_api_key(x_api_key)
 
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Tracking label not found")
+        item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+        if not item:
+            raise HTTPException(status_code=404, detail="Tracking label not found")
 
-    if item.status == "in_store":
-        item.status = "out_for_delivery"
-    elif item.status == "out_for_delivery":
-        item.status = "delivered"
-    else:
-        item.status = "delivered"
+        if item.status == "in_store":
+            item.status = "out_for_delivery"
+        elif item.status == "out_for_delivery":
+            item.status = "delivered"
+        else:
+            item.status = "delivered"
 
-    item.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(item)
+        item.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(item)
 
-    return {
-        "status": "ok",
-        "tracking": {
-            "serial_number": item.serial_number,
-            "report_id": item.report_id,
-            "panel_label": item.panel_label,
-            "status": item.status,
-            "qr_url": item.qr_url,
-            "updated_at": item.updated_at.isoformat(),
-            "board_number": item.board_number,
-        },
-    }
+        return {
+            "status": "ok",
+            "tracking": serialize_tracking(item),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to advance tracking status for %s", serial_number)
+        raise HTTPException(status_code=500, detail=f"Tracking status advance failed: {str(e)}")
