@@ -19,15 +19,17 @@ import type {
 type ViewMode = 'main' | 'admin-stock';
 
 function App() {
-  const pathname = window.location.pathname;
+  const hash = window.location.hash;
+
   const trackingSerial = useMemo(() => {
-    const match = pathname.match(/^\/track\/(.+)$/);
+    const match = hash.match(/^#\/track\/(.+)$/);
     return match ? decodeURIComponent(match[1]) : null;
-  }, [pathname]);
+  }, [hash]);
 
   const [viewMode, setViewMode] = useState<ViewMode>('main');
   const [currentStep, setCurrentStep] = useState(1);
   const [panels, setPanels] = useState<Panel[]>([]);
+
   const [options, setOptions] = useState<OptimizationOptions>({
     kerf: 3,
     labels_on_panels: true,
@@ -36,11 +38,13 @@ function App() {
     edge_banding: true,
     consider_grain: false,
   });
+
   const [customer, setCustomer] = useState<CustomerDetails>({
     project_name: '',
     customer_name: '',
     notes: '',
   });
+
   const [results, setResults] = useState<CuttingResponse | null>(null);
   const [toasts, setToasts] = useState<ToastProps[]>([]);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -74,6 +78,8 @@ function App() {
         customer,
       });
 
+      console.log('Optimization payload:', payload);
+
       const response = await api.optimize(payload);
       setResults(response);
       setCurrentStep(2);
@@ -102,10 +108,12 @@ function App() {
         })
       : null;
 
+  // QR tracking route support using hash routing
   if (trackingSerial) {
     return <TrackingPage serialNo={trackingSerial} />;
   }
 
+  // Admin stock page mode
   if (viewMode === 'admin-stock') {
     return (
       <>
