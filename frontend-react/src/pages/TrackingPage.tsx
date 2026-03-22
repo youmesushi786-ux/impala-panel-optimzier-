@@ -33,6 +33,7 @@ export default function TrackingPage({ serialNo }: Props) {
   const handleAdvance = async () => {
     try {
       setUpdating(true);
+      setMessage('');
       const resp = await api.advanceTrackingStatus(serialNo, adminKey || undefined);
       setTracking(resp.tracking);
       setMessage(`Status updated to ${resp.tracking.status}`);
@@ -46,6 +47,7 @@ export default function TrackingPage({ serialNo }: Props) {
   const handleSetStatus = async (status: 'in_store' | 'out_for_delivery' | 'delivered') => {
     try {
       setUpdating(true);
+      setMessage('');
       const resp = await api.updateTrackingStatus(serialNo, status, adminKey || undefined);
       setTracking(resp.tracking);
       setMessage(`Status updated to ${resp.tracking.status}`);
@@ -143,7 +145,7 @@ export default function TrackingPage({ serialNo }: Props) {
             type="password"
             value={adminKey}
             onChange={(e) => setAdminKey(e.target.value)}
-            placeholder="Admin API Key (if required)"
+            placeholder="Admin API Key (optional in test mode)"
             className="w-full border border-gray-300 rounded-xl px-4 py-3"
           />
 
