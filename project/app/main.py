@@ -3,43 +3,43 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
+from typing import Any, Dict
 from uuid import uuid4
-from typing import Dict, Any
 
-from fastapi import FastAPI, Request, Depends, HTTPException, Header
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+from app.config import CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER
 from app.db import SessionLocal, engine
+from app.job_routes import router as job_router
+from app.job_service import (
+    aggregate_board_requirements_from_layouts,
+    compute_stock_impact_from_selected_boards,
+    save_job_report,
+)
 from app.models import Base, BoardItem, StickerTracking
+from app.optimizer import run_optimization
+from app.pdf_generator import generate_labels_pdf, generate_report_pdf
+from app.pricing import calculate_pricing
 from app.schemas import (
+    BOQItem,
+    BOQSummary,
     CuttingRequest,
     CuttingResponse,
     HealthResponse,
-    BOQSummary,
-    BOQItem,
     StickerTrackingResponse,
 )
-from app.optimizer import run_optimization
-from app.pricing import calculate_pricing
-from app.config import (
-    CUTTING_PRICE_PER_BOARD,
-    EDGING_PRICE_PER_METER,
-)
-from app.pdf_generator import generate_report_pdf, generate_labels_pdf
-from app.job_service import (
-    save_job_report,
-    aggregate_board_requirements_from_layouts,
-    compute_stock_impact_from_selected_boards,
-)
 from app.stock_routes import router as board_router
-from app.job_routes import router as job_router
 
 logger = logging.getLogger("panelpro")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 REQUIRE_ADMIN_API_KEY = os.getenv("REQUIRE_ADMIN_API_KEY", "false").lower() == "true"
@@ -55,13 +55,20 @@ _allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "")
 if _allowed_origins_env:
     origins = [o.strip() for o in _allowed_origins_env.split(",") if o.strip()]
 else:
-    origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://impala-panel-optimzier.onrender.com",
+    ]
+
+logger.info(f"Allowed CORS origins: {origins}")
+logger.info(f"Require admin API key: {REQUIRE_ADMIN_API_KEY}")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -191,7 +198,11 @@ def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSumm
 
 def seed_sticker_tracking(db: Session, report_id: str, stickers):
     for s in stickers:
-        existing = db.query(StickerTracking).filter(StickerTracking.serial_number == s.serial_number).first()
+        existing = (
+            db.query(StickerTracking)
+            .filter(StickerTracking.serial_number == s.serial_number)
+            .first()
+        )
         if existing:
             continue
 
@@ -276,7 +287,7 @@ async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
@@ -293,13 +304,17 @@ async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
 @app.get("/api/tracking/{serial_number}", response_model=StickerTrackingResponse)
 async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
-    item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+    item = (
+        db.query(StickerTracking)
+        .filter(StickerTracking.serial_number == serial_number)
+        .first()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Tracking label not found")
 
@@ -323,7 +338,11 @@ async def update_tracking_status(
 ):
     require_admin_api_key(x_api_key)
 
-    item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+    item = (
+        db.query(StickerTracking)
+        .filter(StickerTracking.serial_number == serial_number)
+        .first()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Tracking label not found")
 
@@ -358,7 +377,11 @@ async def advance_tracking_status(
 ):
     require_admin_api_key(x_api_key)
 
-    item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+    item = (
+        db.query(StickerTracking)
+        .filter(StickerTracking.serial_number == serial_number)
+        .first()
+    )
     if not item:
         raise HTTPException(status_code=404, detail="Tracking label not found")
 
