@@ -70,18 +70,18 @@ class FreeRect:
 
     def intersects(self, other: "FreeRect") -> bool:
         return not (
-            self.x >= other.x + other.w or
-            self.x + self.w <= other.x or
-            self.y >= other.y + other.h or
-            self.y + self.h <= other.y
+            self.x >= other.x + other.w
+            or self.x + self.w <= other.x
+            or self.y >= other.y + other.h
+            or self.y + self.h <= other.y
         )
 
     def contains(self, other: "FreeRect") -> bool:
         return (
-            other.x >= self.x and
-            other.y >= self.y and
-            other.x + other.w <= self.x + self.w and
-            other.y + other.h <= self.y + self.h
+            other.x >= self.x
+            and other.y >= self.y
+            and other.x + other.w <= self.x + self.w
+            and other.y + other.h <= self.y + self.h
         )
 
 
@@ -119,7 +119,13 @@ class Board:
     def efficiency(self) -> float:
         return (self.used_area / self.area()) * 100.0 if self.area() > 0 else 0.0
 
-    def find_best_placement(self, panel: Any, kerf: float, heuristic: str, consider_grain: bool) -> Optional[CandidatePlacement]:
+    def find_best_placement(
+        self,
+        panel: Any,
+        kerf: float,
+        heuristic: str,
+        consider_grain: bool,
+    ) -> Optional[CandidatePlacement]:
         orientations = get_allowed_orientations(panel, kerf, consider_grain)
         best: Optional[CandidatePlacement] = None
 
@@ -164,7 +170,12 @@ class Board:
         self.placed_panels.append(placed)
         self.used_area += candidate.footprint_width * candidate.footprint_length
 
-        used_rect = FreeRect(candidate.x, candidate.y, candidate.footprint_width, candidate.footprint_length)
+        used_rect = FreeRect(
+            candidate.x,
+            candidate.y,
+            candidate.footprint_width,
+            candidate.footprint_length,
+        )
         self._split_all_intersecting_free_rects(used_rect)
         self._prune_free_rects()
 
@@ -179,11 +190,15 @@ class Board:
             if used.y > fr.y:
                 new_rects.append(FreeRect(fr.x, fr.y, fr.w, used.y - fr.y))
             if used.y + used.h < fr.y + fr.h:
-                new_rects.append(FreeRect(fr.x, used.y + used.h, fr.w, (fr.y + fr.h) - (used.y + used.h)))
+                new_rects.append(
+                    FreeRect(fr.x, used.y + used.h, fr.w, (fr.y + fr.h) - (used.y + used.h))
+                )
             if used.x > fr.x:
                 new_rects.append(FreeRect(fr.x, fr.y, used.x - fr.x, fr.h))
             if used.x + used.w < fr.x + fr.w:
-                new_rects.append(FreeRect(used.x + used.w, fr.y, (fr.x + fr.w) - (used.x + used.w), fr.h))
+                new_rects.append(
+                    FreeRect(used.x + used.w, fr.y, (fr.x + fr.w) - (used.x + used.w), fr.h)
+                )
 
         self.free_rects = [r for r in new_rects if r.w > 0 and r.h > 0]
 
@@ -297,7 +312,9 @@ def validate_panels_fit(panel_instances, stock_templates, kerf, consider_grain):
             if fits_any:
                 break
         if not fits_any:
-            raise ValueError(f"Panel '{panel.label or '?'}' ({panel.width} x {panel.length}) cannot fit into available stock.")
+            raise ValueError(
+                f"Panel '{panel.label or '?'}' ({panel.width} x {panel.length}) cannot fit into available stock."
+            )
 
 
 def make_global_stock_remaining(stock_templates: List[StockTemplate]) -> Dict[Tuple[float, float], Optional[int]]:
@@ -351,32 +368,36 @@ def generate_simple_cuts_for_board(board: Board) -> List[CutSegment]:
 
         if 0 < vx < board.width and vx not in seen_v:
             seen_v.add(vx)
-            cuts.append(CutSegment(
-                id=cut_id,
-                orientation="V",
-                x1=vx,
-                y1=0,
-                x2=vx,
-                y2=board.length,
-                length=board.length,
-                board_number=board.board_number,
-                sequence=cut_id,
-            ))
+            cuts.append(
+                CutSegment(
+                    id=cut_id,
+                    orientation="V",
+                    x1=vx,
+                    y1=0,
+                    x2=vx,
+                    y2=board.length,
+                    length=board.length,
+                    board_number=board.board_number,
+                    sequence=cut_id,
+                )
+            )
             cut_id += 1
 
         if 0 < hy < board.length and hy not in seen_h:
             seen_h.add(hy)
-            cuts.append(CutSegment(
-                id=cut_id,
-                orientation="H",
-                x1=0,
-                y1=hy,
-                x2=board.width,
-                y2=hy,
-                length=board.width,
-                board_number=board.board_number,
-                sequence=cut_id,
-            ))
+            cuts.append(
+                CutSegment(
+                    id=cut_id,
+                    orientation="H",
+                    x1=0,
+                    y1=hy,
+                    x2=board.width,
+                    y2=hy,
+                    length=board.width,
+                    board_number=board.board_number,
+                    sequence=cut_id,
+                )
+            )
             cut_id += 1
 
     return cuts
@@ -397,7 +418,11 @@ def generate_stickers(request: CuttingRequest, board_layouts: List[BoardLayout])
         for panel in board.panels:
             material = board.material or {}
             serial_number = f"PNL-{datetime_now_year()}-{serial_counter:05d}"
-            qr_url = f"{frontend_public_url}/track/{serial_number}"
+
+            # HASH-BASED ROUTE
+            qr_url = f"{frontend_public_url}/#/track/{serial_number}"
+
+            logger.info("QR URL GENERATED: %s", qr_url)
 
             stickers.append(
                 StickerLabel(
@@ -607,7 +632,9 @@ def run_optimization(request: CuttingRequest):
 
     total_boards, total_waste, total_waste_percent = evaluate_boards(best_boards)
 
-    edging_map = defaultdict(lambda: {"qty": 0, "edge_per_panel_m": 0.0, "total_edge_m": 0.0, "edges_applied": "None"})
+    edging_map = defaultdict(
+        lambda: {"qty": 0, "edge_per_panel_m": 0.0, "total_edge_m": 0.0, "edges_applied": "None"}
+    )
     for panel in request.panels:
         edge_length_m = panel.edge_length_mm / 1000
         total_edge_m = panel.total_edge_length_mm / 1000
