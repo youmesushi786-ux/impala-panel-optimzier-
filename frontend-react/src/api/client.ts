@@ -32,6 +32,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json();
 }
 
+function getAdminHeaders(adminApiKey?: string): HeadersInit {
+  const trimmed = adminApiKey?.trim();
+  if (!trimmed) return {};
+  return {
+    'x-api-key': trimmed,
+  };
+}
+
 export const api = {
   checkHealth: () =>
     request<{ status: string; timestamp?: string; version?: string }>('/health'),
@@ -91,7 +99,7 @@ export const api = {
   ): Promise<any> =>
     request(`/api/tracking/${encodeURIComponent(serialNumber)}/status`, {
       method: 'POST',
-      headers: adminApiKey ? { 'x-api-key': adminApiKey } : {},
+      headers: getAdminHeaders(adminApiKey),
       body: JSON.stringify({ status }),
     }),
 
@@ -101,6 +109,7 @@ export const api = {
   ): Promise<any> =>
     request(`/api/tracking/${encodeURIComponent(serialNumber)}/advance`, {
       method: 'POST',
-      headers: adminApiKey ? { 'x-api-key': adminApiKey } : {},
+      headers: getAdminHeaders(adminApiKey),
+      body: JSON.stringify({}),
     }),
 };
