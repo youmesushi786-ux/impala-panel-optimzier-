@@ -20,8 +20,6 @@ from .schemas import (
 logger = logging.getLogger("panelpro")
 
 EPS = 1e-6
-BOARD_WIDTH_MM = 1200.0
-BOARD_LENGTH_MM = 2400.0
 TRIM_MARGIN_MM = 0.0
 
 MIN_REUSABLE_WIDTH_MM = 180.0
@@ -65,11 +63,18 @@ def _ensure_request_options(request: CuttingRequest) -> None:
 
 
 def _resolve_board_size(request: CuttingRequest) -> Tuple[float, float]:
-    return (BOARD_WIDTH_MM - 2.0 * TRIM_MARGIN_MM, BOARD_LENGTH_MM - 2.0 * TRIM_MARGIN_MM)
+    board_width = float(request.board.width_mm)
+    board_length = float(request.board.length_mm)
+    return (
+        board_width - 2.0 * TRIM_MARGIN_MM,
+        board_length - 2.0 * TRIM_MARGIN_MM,
+    )
 
 
 def _get_kerf_mm(request: CuttingRequest) -> float:
-    return float(request.kerf_mm or 0.0)
+    if request.options is None:
+        return 3.0
+    return float(request.options.kerf or 3.0)
 
 
 def _panel_can_rotate(panel, request: CuttingRequest) -> bool:
@@ -110,9 +115,10 @@ def _candidate_orientations(unit: PanelUnit, request: CuttingRequest) -> List[Tu
 
 
 def _unit_sort_key(unit: PanelUnit, request: CuttingRequest) -> Tuple:
+    board_width, board_length = _resolve_board_size(request)
     orientations = _candidate_orientations(unit, request)
-    full_width = any(abs(w - BOARD_WIDTH_MM) < EPS for w, _, _ in orientations)
-    full_length = any(abs(l - BOARD_LENGTH_MM) < EPS for _, l, _ in orientations)
+    full_width = any(abs(w - board_width) < EPS for w, _, _ in orientations)
+    full_length = any(abs(l - board_length) < EPS for _, l, _ in orientations)
     max_l = max(l for _, l, _ in orientations)
     max_w = max(w for w, _, _ in orientations)
     min_w = min(w for w, _, _ in orientations)
@@ -295,6 +301,7 @@ def _pack_horizontal_strips(
                         width=w,
                         length=l,
                         label=u.panel.label,
+                        notes=u.panel.notes,
                         rotated=rotated,
                         grain_aligned=u.panel.alignment,
                         board_number=board_no,
@@ -413,6 +420,7 @@ def _pack_vertical_strips(
                         width=w,
                         length=l,
                         label=u.panel.label,
+                        notes=u.panel.notes,
                         rotated=rotated,
                         grain_aligned=u.panel.alignment,
                         board_number=board_no,
@@ -492,6 +500,7 @@ def _pack_shelf_fallback(
                     width=w,
                     length=l,
                     label=unit.panel.label,
+                    notes=unit.panel.notes,
                     rotated=rotated,
                     grain_aligned=unit.panel.alignment,
                     board_number=board.board_number,
@@ -512,6 +521,7 @@ def _pack_shelf_fallback(
                 width=w,
                 length=l,
                 label=unit.panel.label,
+                notes=unit.panel.notes,
                 rotated=rotated,
                 grain_aligned=unit.panel.alignment,
                 board_number=board.board_number,
@@ -559,8 +569,7 @@ def _pack_shelf_fallback(
 
 def _solution_key(boards: List[BoardState], impossible: List[PanelUnit]) -> Tuple:
     total_used = sum(b.used_area for b in boards)
-    board_w, board_l = _resolve_board_size(None)
-    total_board_area = len(boards) * board_w * board_l
+    total_board_area = sum(b.board_width * b.board_length for b in boards)
     waste = total_board_area - total_used
     offcut_scores = [_offcut_score_from_board(b) for b in boards]
     combined_offcut = tuple(sum(vals) for vals in zip(*offcut_scores)) if offcut_scores else (0, 0, 0, 0)
@@ -623,6 +632,7 @@ def _generate_cuts_for_board(board: BoardState, kerf: float) -> List[CutSegment]
                 x2=x,
                 y2=TRIM_MARGIN_MM + board.board_length,
                 length=board.board_length,
+                board_number=board.board_number,
                 label=f"Rip cut at x={x:.1f}",
             )
         )
@@ -639,6 +649,7 @@ def _generate_cuts_for_board(board: BoardState, kerf: float) -> List[CutSegment]
                 x2=TRIM_MARGIN_MM + board.board_width,
                 y2=y,
                 length=board.board_width,
+                board_number=board.board_number,
                 label=f"Cross cut at y={y:.1f}",
             )
         )
@@ -747,7 +758,7 @@ def _work_to_layouts(
         waste = max(board_area - used, 0.0)
         eff = used / board_area * 100.0 if board_area > 0 else 0.0
         total_used_area += used
-        cuts = _generate_cuts_for_board(b, kerf) if (request.options and request.options.generate_cuts) else []
+        cuts = _generate_cuts_for_board(b, kerf) if (not request.options or request.options.generate_cuts) else []
 
         boards.append(
             BoardLayout(
@@ -770,8 +781,8 @@ def _work_to_layouts(
         boards=boards,
         total_used_area=total_used_area,
         impossible_panels=impossible_panels,
-        warnings=warnings + ["Final production optimizer applied for 2400x1200 boards"],
-        kerf_mm=request.kerf_mm,
+        warnings=warnings + [f"Final production optimizer applied for {int(board_length)}x{int(board_width)} boards"],
+        kerf_mm=kerf,
         board_width=board_width,
         board_length=board_length,
         total_panels=sum(int(p.quantity) for p in request.panels),
@@ -782,7 +793,7 @@ def _work_to_layouts(
 
 def run_optimization(
     request: CuttingRequest,
-) -> Tuple[List[BoardLayout], OptimizationSummary, EdgingSummary]:
+) -> Tuple[List[BoardLayout], OptimizationSummary, EdgingSummary, list]:
     _ensure_request_options(request)
     board_width, board_length = _resolve_board_size(request)
     kerf = _get_kerf_mm(request)
@@ -801,9 +812,38 @@ def run_optimization(
 
     boards_work, impossible_units, warnings = _choose_best_solution(solutions)
 
-    return _work_to_layouts(
+    boards, summary, edging = _work_to_layouts(
         request=request,
         boards_work=boards_work,
         impossible_units=impossible_units,
         warnings=warnings,
     )
+
+    stickers = []
+    serial_counter = 1
+
+    for board in boards:
+        for panel in board.panels:
+            stickers.append(
+                {
+                    "serial_number": f"LBL-{board.board_number}-{serial_counter:04d}",
+                    "panel_label": panel.label or "Panel",
+                    "width": panel.width,
+                    "length": panel.length,
+                    "board_number": board.board_number,
+                    "x": panel.x,
+                    "y": panel.y,
+                    "rotated": panel.rotated,
+                    "project_name": request.project_name,
+                    "customer_name": request.customer_name,
+                    "board_type": request.board.board_type,
+                    "thickness_mm": request.board.thickness_mm,
+                    "company": request.board.company,
+                    "color_name": request.board.color_name,
+                    "notes": panel.notes,
+                    "qr_url": None,
+                }
+            )
+            serial_counter += 1
+
+    return boards, summary, edging, stickers
