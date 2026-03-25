@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Trash2, Check, Settings } from 'lucide-react';
+import { Trash2, Check, Settings, Pencil } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -38,6 +38,7 @@ export function StepPanels({
   onOpenAdminStock,
 }: StepPanelsProps) {
   const [catalog, setCatalog] = useState<BoardCatalog | null>(null);
+  const [editingPanelId, setEditingPanelId] = useState<string | null>(null);
   const [panelForm, setPanelForm] = useState({
     label: '',
     width: '',
@@ -61,6 +62,23 @@ export function StepPanels({
   }, []);
 
   const availableBoards = useMemo(() => catalog?.items ?? [], [catalog]);
+
+  const onlyNumbers = (value: string) => value.replace(/[^\d]/g, '');
+
+  const resetPanelForm = () => {
+    setPanelForm({
+      label: '',
+      width: '',
+      length: '',
+      quantity: '1',
+      notes: '',
+      alignment: 'none',
+    });
+    setSelectedBoard(null);
+    setEdgesForm({ top: false, right: false, bottom: false, left: false });
+    setEditingPanelId(null);
+    setErrors({});
+  };
 
   const validate = () => {
     const e: Record<string, string> = {};
@@ -87,8 +105,8 @@ export function StepPanels({
       price_per_board: selectedBoard!.price_per_board,
     };
 
-    const newPanel: Panel = {
-      id: Date.now().toString(),
+    const panelData: Panel = {
+      id: editingPanelId || Date.now().toString(),
       label: panelForm.label.trim(),
       width: Number(panelForm.width),
       length: Number(panelForm.length),
@@ -99,21 +117,45 @@ export function StepPanels({
       edges: { ...edgesForm },
     };
 
-    onPanelsChange([...panels, newPanel]);
+    if (editingPanelId) {
+      onPanelsChange(panels.map((p) => (p.id === editingPanelId ? panelData : p)));
+      setSaveMessage('Panel updated.');
+    } else {
+      onPanelsChange([...panels, panelData]);
+      setSaveMessage('Panel saved.');
+    }
 
-    setPanelForm({
-      label: '',
-      width: '',
-      length: '',
-      quantity: '1',
-      notes: '',
-      alignment: 'none',
-    });
-    setSelectedBoard(null);
-    setEdgesForm({ top: false, right: false, bottom: false, left: false });
-    setErrors({});
-    setSaveMessage('Panel saved.');
+    resetPanelForm();
     setTimeout(() => setSaveMessage(''), 2000);
+  };
+
+  const handleEditPanel = (panel: Panel) => {
+    setEditingPanelId(panel.id);
+    setPanelForm({
+      label: panel.label,
+      width: String(panel.width),
+      length: String(panel.length),
+      quantity: String(panel.quantity),
+      notes: panel.notes || '',
+      alignment: panel.alignment,
+    });
+
+    const matchedBoard =
+      availableBoards.find((item) => item.id === panel.board.board_item_id) || null;
+
+    setSelectedBoard(matchedBoard);
+    setEdgesForm({ ...panel.edges });
+    setErrors({});
+    setSaveMessage('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDeletePanel = (panelId: string) => {
+    onPanelsChange(panels.filter((p) => p.id !== panelId));
+
+    if (editingPanelId === panelId) {
+      resetPanelForm();
+    }
   };
 
   return (
@@ -134,7 +176,11 @@ export function StepPanels({
         </Button>
       </div>
 
-      <Card title="Add a Panel" subtitle="Panel details + board selection + edges" hover>
+      <Card
+        title={editingPanelId ? 'Edit Panel' : 'Add a Panel'}
+        subtitle="Panel details + board selection + edges"
+        hover
+      >
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           <div className="space-y-4">
             <Input
@@ -147,25 +193,28 @@ export function StepPanels({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Input
                 label="Length (mm)"
-                type="number"
+                type="text"
+                inputMode="numeric"
                 value={panelForm.length}
-                onChange={(e) => setPanelForm({ ...panelForm, length: e.target.value })}
+                onChange={(e) => setPanelForm({ ...panelForm, length: onlyNumbers(e.target.value) })}
                 error={errors.length}
               />
               <Input
                 label="Width (mm)"
-                type="number"
+                type="text"
+                inputMode="numeric"
                 value={panelForm.width}
-                onChange={(e) => setPanelForm({ ...panelForm, width: e.target.value })}
+                onChange={(e) => setPanelForm({ ...panelForm, width: onlyNumbers(e.target.value) })}
                 error={errors.width}
               />
             </div>
 
             <Input
               label="Quantity"
-              type="number"
+              type="text"
+              inputMode="numeric"
               value={panelForm.quantity}
-              onChange={(e) => setPanelForm({ ...panelForm, quantity: e.target.value })}
+              onChange={(e) => setPanelForm({ ...panelForm, quantity: onlyNumbers(e.target.value) })}
               error={errors.quantity}
             />
 
@@ -232,9 +281,17 @@ export function StepPanels({
               ))}
             </div>
 
-            <Button fullWidth size="lg" type="button" onClick={handleSavePanel}>
-              Save Panel & Add Next
-            </Button>
+            <div className="flex flex-col gap-2">
+              <Button fullWidth size="lg" type="button" onClick={handleSavePanel}>
+                {editingPanelId ? 'Update Panel' : 'Save Panel & Add Next'}
+              </Button>
+
+              {editingPanelId && (
+                <Button fullWidth size="lg" type="button" variant="outline" onClick={resetPanelForm}>
+                  Cancel Edit
+                </Button>
+              )}
+            </div>
 
             {saveMessage && <p className="text-green-600 text-sm">{saveMessage}</p>}
           </div>
@@ -266,13 +323,14 @@ export function StepPanels({
                         <p className="text-sm text-gray-600">Qty: {panel.quantity}</p>
                       </div>
 
-                      <button
-                        onClick={() => onPanelsChange(panels.filter((p) => p.id !== panel.id))}
-                        type="button"
-                        className="shrink-0"
-                      >
-                        <Trash2 className="w-4 h-4 text-red-500" />
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button onClick={() => handleEditPanel(panel)} type="button">
+                          <Pencil className="w-4 h-4 text-orange-600" />
+                        </button>
+                        <button onClick={() => handleDeletePanel(panel.id)} type="button">
+                          <Trash2 className="w-4 h-4 text-red-500" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="mt-3 text-sm text-gray-700 break-words">
@@ -292,7 +350,7 @@ export function StepPanels({
 
             {/* Desktop table */}
             <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-sm border-collapse min-w-[700px]">
+              <table className="w-full text-sm border-collapse min-w-[850px]">
                 <thead className="bg-gray-50 border-b">
                   <tr>
                     <th className="px-3 py-2 text-left">Label</th>
@@ -300,7 +358,7 @@ export function StepPanels({
                     <th className="px-3 py-2 text-left">Qty</th>
                     <th className="px-3 py-2 text-left">Board</th>
                     <th className="px-3 py-2 text-left">Edges</th>
-                    <th className="px-3 py-2"></th>
+                    <th className="px-3 py-2 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -324,12 +382,14 @@ export function StepPanels({
                         </td>
                         <td className="px-3 py-2">{edgesLabel}</td>
                         <td className="px-3 py-2 text-right">
-                          <button
-                            onClick={() => onPanelsChange(panels.filter((p) => p.id !== panel.id))}
-                            type="button"
-                          >
-                            <Trash2 className="w-4 h-4 text-red-500" />
-                          </button>
+                          <div className="flex justify-end gap-3">
+                            <button onClick={() => handleEditPanel(panel)} type="button">
+                              <Pencil className="w-4 h-4 text-orange-600" />
+                            </button>
+                            <button onClick={() => handleDeletePanel(panel.id)} type="button">
+                              <Trash2 className="w-4 h-4 text-red-500" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -345,9 +405,10 @@ export function StepPanels({
         <div className="space-y-3">
           <Input
             label="Kerf (mm)"
-            type="number"
-            value={options.kerf}
-            onChange={(e) => onOptionsChange({ ...options, kerf: Number(e.target.value) })}
+            type="text"
+            inputMode="numeric"
+            value={String(options.kerf)}
+            onChange={(e) => onOptionsChange({ ...options, kerf: Number(onlyNumbers(e.target.value) || 0) })}
           />
           <Toggle
             label="Labels on panels"
