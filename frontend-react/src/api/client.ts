@@ -70,14 +70,22 @@ export const api = {
   getBoardCatalog: (): Promise<BoardCatalog> => request('/api/boards/catalog'),
 
   getBoardItems: (): Promise<BoardItem[]> => request('/api/boards-admin/'),
+
   createBoardItem: (payload: Omit<BoardItem, 'id'>): Promise<BoardItem> =>
     request('/api/boards-admin/', { method: 'POST', body: JSON.stringify(payload) }),
+
   updateBoardItem: (id: number, payload: Partial<BoardItem>): Promise<BoardItem> =>
     request(`/api/boards-admin/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  deleteBoardItem: (id: number): Promise<void> =>
+    request(`/api/boards-admin/${id}`, { method: 'DELETE' }),
+
   addBoardStock: (payload: StockAdjustmentRequest): Promise<BoardItem> =>
     request('/api/boards-admin/add', { method: 'POST', body: JSON.stringify(payload) }),
+
   deductBoardStock: (payload: StockAdjustmentRequest): Promise<BoardItem> =>
     request('/api/boards-admin/deduct', { method: 'POST', body: JSON.stringify(payload) }),
+
   getBoardTransactions: (boardItemId: number): Promise<StockTransaction[]> =>
     request(`/api/boards-admin/transactions/${boardItemId}`),
 
@@ -86,6 +94,7 @@ export const api = {
   },
 
   getJob: (reportId: string): Promise<any> => request(`/api/jobs/${reportId}`),
+
   confirmJob: (reportId: string): Promise<JobConfirmResponse> =>
     request(`/api/jobs/confirm/${reportId}`, { method: 'POST' }),
 
