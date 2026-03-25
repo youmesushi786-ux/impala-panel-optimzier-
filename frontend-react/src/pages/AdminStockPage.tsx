@@ -26,8 +26,9 @@ export default function AdminStockPage({ onBack }: Props) {
   const [items, setItems] = useState<BoardItem[]>([]);
   const [transactions, setTransactions] = useState<StockTransaction[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<any>(emptyForm);
-  const [adjustQty, setAdjustQty] = useState('1');
+  const [adjustQtyMap, setAdjustQtyMap] = useState<Record<number, string>>({});
   const [adjustNotes, setAdjustNotes] = useState('');
   const [search, setSearch] = useState('');
   const [message, setMessage] = useState('');
@@ -37,6 +38,12 @@ export default function AdminStockPage({ onBack }: Props) {
     try {
       const data = await api.getBoardItems();
       setItems(data);
+
+      const initialQtyMap: Record<number, string> = {};
+      data.forEach((item: BoardItem) => {
+        initialQtyMap[item.id] = adjustQtyMap[item.id] || '1';
+      });
+      setAdjustQtyMap(initialQtyMap);
     } catch (e: any) {
       setError(e.message || 'Failed to load boards');
     }
@@ -46,9 +53,14 @@ export default function AdminStockPage({ onBack }: Props) {
     load();
   }, []);
 
-  const handleCreate = async () => {
+  const resetForm = () => {
+    setForm(emptyForm);
+    setEditingId(null);
+  };
+
+  const handleCreateOrUpdate = async () => {
     try {
-      const created = await api.createBoardItem({
+      const payload = {
         ...form,
         thickness_mm: Number(form.thickness_mm),
         width_mm: Number(form.width_mm),
@@ -56,28 +68,94 @@ export default function AdminStockPage({ onBack }: Props) {
         price_per_board: Number(form.price_per_board),
         quantity: Number(form.quantity),
         low_stock_threshold: Number(form.low_stock_threshold),
-      });
-      setItems((prev) => [...prev, created]);
-      setForm(emptyForm);
-      setMessage('Board item created');
+      };
+
+      if (editingId) {
+        const updated = await api.updateBoardItem(editingId, payload);
+        setItems((prev) => prev.map((item) => (item.id === editingId ? updated : item)));
+        setMessage('Board item updated successfully');
+      } else {
+        const created = await api.createBoardItem(payload);
+        setItems((prev) => [...prev, created]);
+        setMessage('Board item created');
+      }
+
       setError('');
+      resetForm();
     } catch (e: any) {
-      setError(e.message || 'Failed to create');
+      setError(e.message || 'Failed to save board item');
+    }
+  };
+
+  const handleEdit = (row: BoardItem) => {
+    setEditingId(row.id);
+    setForm({
+      board_type: row.board_type || '',
+      thickness_mm: row.thickness_mm || 18,
+      color_name: row.color_name || '',
+      company: row.company || '',
+      width_mm: row.width_mm || 1220,
+      length_mm: row.length_mm || 2440,
+      price_per_board: row.price_per_board || 0,
+      quantity: row.quantity || 0,
+      low_stock_threshold: row.low_stock_threshold || 3,
+      is_active: row.is_active ?? true,
+    });
+    setMessage('');
+    setError('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleDelete = async (id: number) => {
+    const confirmed = window.confirm('Are you sure you want to delete this board item?');
+    if (!confirmed) return;
+
+    try {
+      await api.deleteBoardItem(id);
+      setItems((prev) => prev.filter((item) => item.id !== id));
+
+      if (selectedId === id) {
+        setSelectedId(null);
+        setTransactions([]);
+      }
+
+      setMessage('Board item deleted successfully');
+      setError('');
+
+      if (editingId === id) {
+        resetForm();
+      }
+    } catch (e: any) {
+      setError(e.message || 'Failed to delete board item');
     }
   };
 
   const handleAddStock = async (id: number) => {
     try {
+      const qty = Number(adjustQtyMap[id] || '0');
+
+      if (!qty || qty < 1) {
+        setError('Please enter a valid quantity greater than 0');
+        return;
+      }
+
       await api.addBoardStock({
         board_item_id: id,
-        quantity: Number(adjustQty),
+        quantity: qty,
         notes: adjustNotes || undefined,
         reference: 'ADMIN_ADD_STOCK',
       });
+
       setMessage('Stock added');
-      setAdjustQty('1');
-      setAdjustNotes('');
+      setError('');
+
+      setAdjustQtyMap((prev) => ({
+        ...prev,
+        [id]: '1',
+      }));
+
       await load();
+
       if (selectedId === id) {
         setTransactions(await api.getBoardTransactions(id));
       }
@@ -87,8 +165,13 @@ export default function AdminStockPage({ onBack }: Props) {
   };
 
   const openHistory = async (id: number) => {
-    setSelectedId(id);
-    setTransactions(await api.getBoardTransactions(id));
+    try {
+      setSelectedId(id);
+      const data = await api.getBoardTransactions(id);
+      setTransactions(data);
+    } catch (e: any) {
+      setError(e.message || 'Failed to load transaction history');
+    }
   };
 
   const filtered = useMemo(() => {
@@ -101,6 +184,19 @@ export default function AdminStockPage({ onBack }: Props) {
 
   return (
     <div className="p-3 sm:p-4 lg:p-6 max-w-[1800px] mx-auto space-y-6">
+      <style>{`
+        input[type="number"]::-webkit-outer-spin-button,
+        input[type="number"]::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+
+        input[type="number"] {
+          -moz-appearance: textfield;
+          appearance: textfield;
+        }
+      `}</style>
+
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-4">
         <div className="min-w-0">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Admin Board Inventory</h1>
@@ -132,7 +228,7 @@ export default function AdminStockPage({ onBack }: Props) {
         </div>
       )}
 
-      <Card title="Add Board Item" hover>
+      <Card title={editingId ? 'Edit Board Item' : 'Add Board Item'} hover>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           <Input
             label="Board Type"
@@ -143,7 +239,7 @@ export default function AdminStockPage({ onBack }: Props) {
             label="Thickness (mm)"
             type="number"
             value={form.thickness_mm}
-            onChange={(e) => setForm({ ...form, thickness_mm: Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, thickness_mm: e.target.value })}
           />
           <Input
             label="Color"
@@ -159,38 +255,44 @@ export default function AdminStockPage({ onBack }: Props) {
             label="Width (mm)"
             type="number"
             value={form.width_mm}
-            onChange={(e) => setForm({ ...form, width_mm: Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, width_mm: e.target.value })}
           />
           <Input
             label="Length (mm)"
             type="number"
             value={form.length_mm}
-            onChange={(e) => setForm({ ...form, length_mm: Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, length_mm: e.target.value })}
           />
           <Input
             label="Price Per Board"
             type="number"
             value={form.price_per_board}
-            onChange={(e) => setForm({ ...form, price_per_board: Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, price_per_board: e.target.value })}
           />
           <Input
             label="Opening Quantity"
             type="number"
             value={form.quantity}
-            onChange={(e) => setForm({ ...form, quantity: Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, quantity: e.target.value })}
           />
           <Input
             label="Low Stock Threshold"
             type="number"
             value={form.low_stock_threshold}
-            onChange={(e) => setForm({ ...form, low_stock_threshold: Number(e.target.value) })}
+            onChange={(e) => setForm({ ...form, low_stock_threshold: e.target.value })}
           />
         </div>
 
-        <div className="mt-4">
-          <Button onClick={handleCreate} className="w-full sm:w-auto">
-            Save Board Item
+        <div className="mt-4 flex flex-col sm:flex-row gap-3">
+          <Button onClick={handleCreateOrUpdate} className="w-full sm:w-auto">
+            {editingId ? 'Update Board Item' : 'Save Board Item'}
           </Button>
+
+          {editingId && (
+            <Button variant="outline" onClick={resetForm} className="w-full sm:w-auto">
+              Cancel Edit
+            </Button>
+          )}
         </div>
       </Card>
 
@@ -249,8 +351,13 @@ export default function AdminStockPage({ onBack }: Props) {
                       className="w-full sm:w-24 border rounded px-3 py-2"
                       type="number"
                       min={1}
-                      value={adjustQty}
-                      onChange={(e) => setAdjustQty(e.target.value)}
+                      value={adjustQtyMap[row.id] || ''}
+                      onChange={(e) =>
+                        setAdjustQtyMap((prev) => ({
+                          ...prev,
+                          [row.id]: e.target.value,
+                        }))
+                      }
                     />
                     <Button size="sm" onClick={() => handleAddStock(row.id)} className="w-full sm:w-auto">
                       Add Stock
@@ -264,13 +371,32 @@ export default function AdminStockPage({ onBack }: Props) {
                       View History
                     </Button>
                   </div>
+
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleEdit(row)}
+                      className="w-full sm:w-auto"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleDelete(row.id)}
+                      className="w-full sm:w-auto"
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </div>
               ))}
             </div>
 
             {/* Desktop table */}
             <div className="hidden lg:block overflow-x-auto">
-              <table className="w-full text-sm border-collapse min-w-[900px]">
+              <table className="w-full text-sm border-collapse min-w-[1100px]">
                 <thead className="bg-gray-50 border-b">
                   <tr>
                     <th className="px-3 py-2 text-left">Board</th>
@@ -280,6 +406,7 @@ export default function AdminStockPage({ onBack }: Props) {
                     <th className="px-3 py-2 text-left">Low Stock</th>
                     <th className="px-3 py-2 text-left">Quick Add</th>
                     <th className="px-3 py-2 text-left">History</th>
+                    <th className="px-3 py-2 text-left">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -300,8 +427,13 @@ export default function AdminStockPage({ onBack }: Props) {
                             className="w-20 border rounded px-2 py-1"
                             type="number"
                             min={1}
-                            value={adjustQty}
-                            onChange={(e) => setAdjustQty(e.target.value)}
+                            value={adjustQtyMap[row.id] || ''}
+                            onChange={(e) =>
+                              setAdjustQtyMap((prev) => ({
+                                ...prev,
+                                [row.id]: e.target.value,
+                              }))
+                            }
                           />
                           <Button size="sm" onClick={() => handleAddStock(row.id)}>
                             Add
@@ -313,92 +445,9 @@ export default function AdminStockPage({ onBack }: Props) {
                           History
                         </Button>
                       </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </Card>
-
-      <Card title="Transactions" hover>
-        {!selectedId ? (
-          <p className="text-gray-500 text-sm sm:text-base">
-            Select a board row to view transactions.
-          </p>
-        ) : transactions.length === 0 ? (
-          <p className="text-gray-500 text-sm sm:text-base">No transactions found.</p>
-        ) : (
-          <>
-            {/* Mobile cards */}
-            <div className="space-y-3 lg:hidden">
-              {transactions.map((tx) => (
-                <div key={tx.id} className="border border-gray-200 rounded-xl p-4 bg-white space-y-2">
-                  <p className="text-sm font-semibold text-gray-900">
-                    {tx.transaction_type}
-                  </p>
-                  <p className="text-sm text-gray-600">
-                    {new Date(tx.created_at).toLocaleString()}
-                  </p>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <p className="text-gray-500">Qty</p>
-                      <p className="font-medium">{tx.quantity}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Before</p>
-                      <p className="font-medium">{tx.balance_before}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">After</p>
-                      <p className="font-medium">{tx.balance_after}</p>
-                    </div>
-                    <div>
-                      <p className="text-gray-500">Reference</p>
-                      <p className="font-medium break-words">{tx.reference || '-'}</p>
-                    </div>
-                  </div>
-                  <div className="text-sm">
-                    <p className="text-gray-500">Notes</p>
-                    <p className="font-medium break-words">{tx.notes || '-'}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Desktop table */}
-            <div className="hidden lg:block overflow-x-auto">
-              <table className="w-full text-sm border-collapse min-w-[900px]">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Date</th>
-                    <th className="px-3 py-2 text-left">Type</th>
-                    <th className="px-3 py-2 text-left">Qty</th>
-                    <th className="px-3 py-2 text-left">Before</th>
-                    <th className="px-3 py-2 text-left">After</th>
-                    <th className="px-3 py-2 text-left">Reference</th>
-                    <th className="px-3 py-2 text-left">Notes</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transactions.map((tx) => (
-                    <tr key={tx.id} className="border-b border-gray-100">
-                      <td className="px-3 py-2">{new Date(tx.created_at).toLocaleString()}</td>
-                      <td className="px-3 py-2">{tx.transaction_type}</td>
-                      <td className="px-3 py-2">{tx.quantity}</td>
-                      <td className="px-3 py-2">{tx.balance_before}</td>
-                      <td className="px-3 py-2">{tx.balance_after}</td>
-                      <td className="px-3 py-2">{tx.reference || '-'}</td>
-                      <td className="px-3 py-2">{tx.notes || '-'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-      </Card>
-    </div>
-  );
-}
+                      <td className="px-3 py-2">
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => handleEdit(row)}>
+                            Edit
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => handleDelete(row.id)}>
