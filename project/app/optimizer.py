@@ -15,6 +15,7 @@ from .schemas import (
     OptimizationSummary,
     Options,
     PlacedPanel,
+    StickerLabel,
 )
 
 logger = logging.getLogger("panelpro")
@@ -78,10 +79,15 @@ def _get_kerf_mm(request: CuttingRequest) -> float:
 
 
 def _panel_can_rotate(panel, request: CuttingRequest) -> bool:
-    if request.options and not request.options.allow_rotation:
+    allow_rotation = getattr(request.options, "allow_rotation", True) if request.options else True
+    consider_grain = getattr(request.options, "consider_grain", False) if request.options else False
+
+    if not allow_rotation:
         return False
-    if request.options and request.options.consider_grain:
+
+    if consider_grain:
         return panel.alignment == GrainAlignment.none
+
     return True
 
 
@@ -164,10 +170,6 @@ def _is_reusable_rect(w: float, l: float) -> bool:
     return w >= MIN_REUSABLE_WIDTH_MM and l >= MIN_REUSABLE_LENGTH_MM
 
 
-def _is_sliver_rect(w: float, l: float) -> bool:
-    return w < SLIVER_WIDTH_MM or l < SLIVER_LENGTH_MM
-
-
 def _offcut_score_from_board(board: BoardState) -> Tuple:
     waste = max(board.board_width * board.board_length - board.used_area, 0.0)
     reusable_bonus = waste if waste >= MIN_REUSABLE_WIDTH_MM * MIN_REUSABLE_LENGTH_MM else 0.0
@@ -178,33 +180,6 @@ def _offcut_score_from_board(board: BoardState) -> Tuple:
         waste,
         len(board.placed_panels),
     )
-
-
-def _compute_impossible_from_solution(request: CuttingRequest, boards: List[BoardState]) -> List[PanelUnit]:
-    placed = Counter()
-    for b in boards:
-        for p in b.placed_panels:
-            placed[p.panel_index] += 1
-
-    impossible: List[PanelUnit] = []
-    uid = 1
-    for idx, pd in enumerate(request.panels):
-        qty = int(pd.quantity)
-        missing = max(0, qty - placed[idx])
-        for _ in range(missing):
-            impossible.append(
-                PanelUnit(
-                    panel_index=idx,
-                    panel=pd,
-                    unit_id=uid,
-                    width=float(pd.width),
-                    length=float(pd.length),
-                    area=float(pd.width) * float(pd.length),
-                    label=pd.label or f"Panel-{idx + 1}",
-                )
-            )
-            uid += 1
-    return impossible
 
 
 def _pack_horizontal_strips(
@@ -230,7 +205,7 @@ def _pack_horizontal_strips(
 
             candidate_heights = []
             for u in available:
-                for w, l, _ in _candidate_orientations(u, request):
+                for _, l, _ in _candidate_orientations(u, request):
                     if l <= board_l - (y - TRIM_MARGIN_MM) + EPS:
                         candidate_heights.append(l)
 
@@ -349,7 +324,7 @@ def _pack_vertical_strips(
 
             candidate_widths = []
             for u in available:
-                for w, l, _ in _candidate_orientations(u, request):
+                for w, _, _ in _candidate_orientations(u, request):
                     if w <= board_w - (x - TRIM_MARGIN_MM) + EPS:
                         candidate_widths.append(w)
 
@@ -747,7 +722,7 @@ def _work_to_layouts(
     warnings = warnings or []
     boards_work = [b for b in boards_work if b.used_area > EPS]
 
-    if not request.options or request.options.strict_validation:
+    if not request.options or getattr(request.options, "strict_validation", True):
         _validate_board_layouts(boards_work, TRIM_MARGIN_MM + board_width, TRIM_MARGIN_MM + board_length)
 
     boards: List[BoardLayout] = []
@@ -758,7 +733,7 @@ def _work_to_layouts(
         waste = max(board_area - used, 0.0)
         eff = used / board_area * 100.0 if board_area > 0 else 0.0
         total_used_area += used
-        cuts = _generate_cuts_for_board(b, kerf) if (not request.options or request.options.generate_cuts) else []
+        cuts = _generate_cuts_for_board(b, kerf) if (not request.options or getattr(request.options, "generate_cuts", True)) else []
 
         boards.append(
             BoardLayout(
@@ -793,7 +768,7 @@ def _work_to_layouts(
 
 def run_optimization(
     request: CuttingRequest,
-) -> Tuple[List[BoardLayout], OptimizationSummary, EdgingSummary, list]:
+) -> Tuple[List[BoardLayout], OptimizationSummary, EdgingSummary, List[StickerLabel]]:
     _ensure_request_options(request)
     board_width, board_length = _resolve_board_size(request)
     kerf = _get_kerf_mm(request)
@@ -819,30 +794,30 @@ def run_optimization(
         warnings=warnings,
     )
 
-    stickers = []
+    stickers: List[StickerLabel] = []
     serial_counter = 1
 
     for board in boards:
         for panel in board.panels:
             stickers.append(
-                {
-                    "serial_number": f"LBL-{board.board_number}-{serial_counter:04d}",
-                    "panel_label": panel.label or "Panel",
-                    "width": panel.width,
-                    "length": panel.length,
-                    "board_number": board.board_number,
-                    "x": panel.x,
-                    "y": panel.y,
-                    "rotated": panel.rotated,
-                    "project_name": request.project_name,
-                    "customer_name": request.customer_name,
-                    "board_type": request.board.board_type,
-                    "thickness_mm": request.board.thickness_mm,
-                    "company": request.board.company,
-                    "color_name": request.board.color_name,
-                    "notes": panel.notes,
-                    "qr_url": None,
-                }
+                StickerLabel(
+                    serial_number=f"LBL-{board.board_number}-{serial_counter:04d}",
+                    panel_label=panel.label or "Panel",
+                    width=panel.width,
+                    length=panel.length,
+                    board_number=board.board_number,
+                    x=panel.x,
+                    y=panel.y,
+                    rotated=panel.rotated,
+                    project_name=request.project_name,
+                    customer_name=request.customer_name,
+                    board_type=request.board.board_type,
+                    thickness_mm=request.board.thickness_mm,
+                    company=request.board.company,
+                    color_name=request.board.color_name,
+                    notes=panel.notes,
+                    qr_url=None,
+                )
             )
             serial_counter += 1
 
