@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from reportlab.lib.pagesizes import A4, landscape
@@ -53,6 +53,17 @@ def patch_board(item_id: int, payload: BoardItemUpdate, db: Session = Depends(ge
     if not item:
         raise HTTPException(status_code=404, detail="Board item not found")
     return update_board_item(db, item, payload)
+
+
+@router.delete("/{item_id}", status_code=204)
+def delete_board(item_id: int, db: Session = Depends(get_db)):
+    item = db.query(BoardItem).filter(BoardItem.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Board item not found")
+
+    db.delete(item)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/add", response_model=BoardItemOut)
