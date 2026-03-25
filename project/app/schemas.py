@@ -83,8 +83,6 @@ class Options(BaseModel):
     consider_material: bool = True
     edge_banding: bool = True
     consider_grain: bool = False
-
-    # Added to match optimizer.py
     allow_rotation: bool = True
     strict_validation: bool = True
     generate_cuts: bool = True
@@ -152,8 +150,6 @@ class OptimizationSummary(BaseModel):
     total_waste_percent: float
     board_width: float
     board_length: float
-
-    # Added to match optimizer.py
     total_used_area_mm2: float = 0.0
     overall_efficiency_percent: float = 0.0
     kerf_mm: float = 0.0
