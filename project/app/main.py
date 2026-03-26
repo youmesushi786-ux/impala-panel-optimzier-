@@ -13,28 +13,6 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from app.config import CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER
-from app.db import SessionLocal, engine
-from app.job_routes import router as job_router
-from app.job_service import (
-    aggregate_board_requirements_from_layouts,
-    compute_stock_impact_from_selected_boards,
-    save_job_report,
-)
-from app.models import Base, BoardItem, StickerTracking
-from app.optimizer import run_optimization
-from app.pdf_generator import generate_labels_pdf, generate_report_pdf
-from app.pricing import calculate_pricing
-from app.schemas import (
-    BOQItem,
-    BOQSummary,
-    CuttingRequest,
-    CuttingResponse,
-    HealthResponse,
-    StickerTrackingResponse,
-)
-from app.stock_routes import router as board_router
-
 logger = logging.getLogger("panelpro")
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +23,14 @@ ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 REQUIRE_ADMIN_API_KEY = os.getenv("REQUIRE_ADMIN_API_KEY", "false").lower() == "true"
 
 app = FastAPI(title="PanelPro - Cutting Optimizer")
-Base.metadata.create_all(bind=engine)
+
+# --- DB setup (lazy to avoid circular) ---
+def _init_db():
+    from app.db import engine
+    from app.models import Base
+    Base.metadata.create_all(bind=engine)
+
+_init_db()
 
 if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -74,11 +59,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(board_router, prefix="/api")
-app.include_router(job_router, prefix="/api")
+# --- Include routers lazily ---
+def _include_routers():
+    from app.stock_routes import router as board_router
+    from app.job_routes import router as job_router
+    app.include_router(board_router, prefix="/api")
+    app.include_router(job_router, prefix="/api")
+
+_include_routers()
 
 
 def get_db():
+    from app.db import SessionLocal
     db = SessionLocal()
     try:
         yield db
@@ -89,15 +81,13 @@ def get_db():
 def require_admin_api_key(x_api_key: str | None):
     if not REQUIRE_ADMIN_API_KEY:
         return
-
     if not x_api_key:
         raise HTTPException(status_code=403, detail="Missing admin API key")
-
     if x_api_key != ADMIN_API_KEY:
         raise HTTPException(status_code=403, detail="Invalid admin API key")
 
 
-def serialize_tracking(item: StickerTracking) -> Dict[str, Any]:
+def serialize_tracking(item) -> Dict[str, Any]:
     return {
         "serial_number": item.serial_number,
         "report_id": item.report_id,
@@ -120,13 +110,15 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
+@app.get("/health")
+async def health():
+    from app.schemas import HealthResponse
     return HealthResponse()
 
 
 @app.get("/api/boards/catalog")
 async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
+    from app.models import BoardItem
     items = db.query(BoardItem).all()
     return {
         "items": [
@@ -148,9 +140,11 @@ async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
     }
 
 
-def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSummary:
-    items: list[BOQItem] = []
+def build_boq(request, optimization, edging, pricing):
+    from app.schemas import BOQItem, BOQSummary
+    from app.config import CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER
 
+    items = []
     for idx, p in enumerate(request.panels, start=1):
         edges = "".join(
             edge[0].upper()
@@ -217,11 +211,13 @@ def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSumm
 
 
 def seed_sticker_tracking(db: Session, report_id: str, stickers):
+    from app.models import StickerTracking
     for s in stickers:
-        existing = db.query(StickerTracking).filter(StickerTracking.serial_number == s.serial_number).first()
+        existing = db.query(StickerTracking).filter(
+            StickerTracking.serial_number == s.serial_number
+        ).first()
         if existing:
             continue
-
         db.add(
             StickerTracking(
                 serial_number=s.serial_number,
@@ -235,18 +231,33 @@ def seed_sticker_tracking(db: Session, report_id: str, stickers):
     db.commit()
 
 
-@app.post("/api/optimize", response_model=CuttingResponse)
-async def api_optimize(req: CuttingRequest, db: Session = Depends(get_db)) -> CuttingResponse:
+@app.post("/api/optimize")
+async def api_optimize(req: dict, db: Session = Depends(get_db)):
+    from app.schemas import CuttingRequest, CuttingResponse
+    from app.optimizer import run_optimization
+    from app.pricing import calculate_pricing
+    from app.job_service import (
+        aggregate_board_requirements_from_layouts,
+        compute_stock_impact_from_selected_boards,
+        save_job_report,
+    )
+
     try:
-        boards, optimization, edging_summary, stickers = run_optimization(req)
+        cutting_req = CuttingRequest(**req)
     except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid request: {str(e)}")
+
+    try:
+        boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+    except Exception as e:
+        logger.exception("Optimization failed")
         raise HTTPException(status_code=400, detail=f"Optimization failed: {str(e)}")
 
-    pricing = calculate_pricing(req, optimization, edging_summary.total_meters)
-    boq = build_boq(req, optimization, edging_summary, pricing)
+    pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
+    boq = build_boq(cutting_req, optimization, edging_summary, pricing)
 
     report_id = f"RPT-{uuid4().hex[:10].upper()}"
-    request_json = req.model_dump()
+    request_json = cutting_req.model_dump()
 
     board_requirements = aggregate_board_requirements_from_layouts(boards)
     stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
@@ -262,8 +273,8 @@ async def api_optimize(req: CuttingRequest, db: Session = Depends(get_db)) -> Cu
 
     return CuttingResponse(
         request_summary={
-            "project_name": req.project_name,
-            "customer_name": req.customer_name,
+            "project_name": cutting_req.project_name,
+            "customer_name": cutting_req.customer_name,
             "total_panels": optimization.total_panels,
         },
         optimization=optimization,
@@ -278,10 +289,20 @@ async def api_optimize(req: CuttingRequest, db: Session = Depends(get_db)) -> Cu
 
 
 @app.post("/api/optimize/report")
-async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
-    boards, optimization, edging_summary, stickers = run_optimization(req)
-    pricing = calculate_pricing(req, optimization, edging_summary.total_meters)
-    boq = build_boq(req, optimization, edging_summary, pricing)
+async def export_report_pdf(req: dict, db: Session = Depends(get_db)):
+    from app.schemas import CuttingRequest
+    from app.optimizer import run_optimization
+    from app.pricing import calculate_pricing
+    from app.pdf_generator import generate_report_pdf
+    from app.job_service import (
+        aggregate_board_requirements_from_layouts,
+        compute_stock_impact_from_selected_boards,
+    )
+
+    cutting_req = CuttingRequest(**req)
+    boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+    pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
+    boq = build_boq(cutting_req, optimization, edging_summary, pricing)
 
     board_requirements = aggregate_board_requirements_from_layouts(boards)
     stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
@@ -289,7 +310,7 @@ async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     report_id = f"RPT-{uuid4().hex[:10].upper()}"
 
     pdf_bytes = generate_report_pdf(
-        request=req,
+        request=cutting_req,
         layouts=boards,
         optimization=optimization,
         edging=edging_summary,
@@ -308,8 +329,13 @@ async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/optimize/labels")
-async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
-    boards, optimization, edging_summary, stickers = run_optimization(req)
+async def export_labels_pdf(req: dict, db: Session = Depends(get_db)):
+    from app.schemas import CuttingRequest
+    from app.optimizer import run_optimization
+    from app.pdf_generator import generate_labels_pdf
+
+    cutting_req = CuttingRequest(**req)
+    boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
 
     report_id = f"RPT-{uuid4().hex[:10].upper()}"
     seed_sticker_tracking(db, report_id, stickers)
@@ -324,9 +350,14 @@ async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     )
 
 
-@app.get("/api/tracking/{serial_number}", response_model=StickerTrackingResponse)
+@app.get("/api/tracking/{serial_number}")
 async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
-    item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+    from app.models import StickerTracking
+    from app.schemas import StickerTrackingResponse
+
+    item = db.query(StickerTracking).filter(
+        StickerTracking.serial_number == serial_number
+    ).first()
     if not item:
         raise HTTPException(status_code=404, detail="Tracking label not found")
 
@@ -340,31 +371,26 @@ async def update_tracking_status(
     db: Session = Depends(get_db),
     x_api_key: str | None = Header(default=None),
 ):
-    try:
-        require_admin_api_key(x_api_key)
+    from app.models import StickerTracking
 
-        item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="Tracking label not found")
+    require_admin_api_key(x_api_key)
 
-        new_status = payload.get("status")
-        if new_status not in {"in_store", "out_for_delivery", "delivered"}:
-            raise HTTPException(status_code=400, detail="Invalid status")
+    item = db.query(StickerTracking).filter(
+        StickerTracking.serial_number == serial_number
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Tracking label not found")
 
-        item.status = new_status
-        item.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(item)
+    new_status = payload.get("status")
+    if new_status not in {"in_store", "out_for_delivery", "delivered"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
 
-        return {
-            "status": "ok",
-            "tracking": serialize_tracking(item),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Failed to update tracking status for %s", serial_number)
-        raise HTTPException(status_code=500, detail=f"Tracking status update failed: {str(e)}")
+    item.status = new_status
+    item.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+
+    return {"status": "ok", "tracking": serialize_tracking(item)}
 
 
 @app.post("/api/tracking/{serial_number}/advance")
@@ -373,30 +399,25 @@ async def advance_tracking_status(
     db: Session = Depends(get_db),
     x_api_key: str | None = Header(default=None),
 ):
-    try:
-        require_admin_api_key(x_api_key)
+    from app.models import StickerTracking
 
-        item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
-        if not item:
-            raise HTTPException(status_code=404, detail="Tracking label not found")
+    require_admin_api_key(x_api_key)
 
-        if item.status == "in_store":
-            item.status = "out_for_delivery"
-        elif item.status == "out_for_delivery":
-            item.status = "delivered"
-        else:
-            item.status = "delivered"
+    item = db.query(StickerTracking).filter(
+        StickerTracking.serial_number == serial_number
+    ).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Tracking label not found")
 
-        item.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(item)
+    if item.status == "in_store":
+        item.status = "out_for_delivery"
+    elif item.status == "out_for_delivery":
+        item.status = "delivered"
+    else:
+        item.status = "delivered"
 
-        return {
-            "status": "ok",
-            "tracking": serialize_tracking(item),
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Failed to advance tracking status for %s", serial_number)
-        raise HTTPException(status_code=500, detail=f"Tracking status advance failed: {str(e)}")
+    item.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(item)
+
+    return {"status": "ok", "tracking": serialize_tracking(item)}
