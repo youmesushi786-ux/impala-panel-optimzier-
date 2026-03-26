@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import os
+import math
+import logging
+from uuid import uuid4
 from dataclasses import dataclass, field
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Any
-import logging
-import math
-from uuid import uuid4
 
 logger = logging.getLogger("panelpro")
 
 EPS = 1e-6
+PUBLIC_BASE_URL = os.getenv(
+    "PUBLIC_BASE_URL",
+    "https://impala-panel-optimzier-v1.onrender.com",
+).rstrip("/")
 
 
 # ───────────────────── Data ─────────────────────
@@ -72,8 +77,12 @@ def _expand_panel_units(request) -> List[PanelUnit]:
         for i in range(int(p.quantity)):
             units.append(
                 PanelUnit(
-                    panel_index=idx, panel=p, unit_id=uid,
-                    width=w, length=l, area=w * l,
+                    panel_index=idx,
+                    panel=p,
+                    unit_id=uid,
+                    width=w,
+                    length=l,
+                    area=w * l,
                     label=f"{base_label} #{i + 1}",
                 )
             )
@@ -221,14 +230,18 @@ def _guillotine_full_pack(
 
         board = BoardState(
             board_number=len(boards) + 1,
-            board_width=float(bw), board_length=float(bl),
+            board_width=float(bw),
+            board_length=float(bl),
         )
         for unit, x, y, pw, ph, rotated in placements:
             board.placed_panels.append(PlacedPanel(
                 panel_index=unit.panel_index,
-                x=float(x), y=float(y),
-                width=float(pw), length=float(ph),
-                label=unit.label, rotated=rotated,
+                x=float(x),
+                y=float(y),
+                width=float(pw),
+                length=float(ph),
+                label=unit.label,
+                rotated=rotated,
                 grain_aligned=unit.panel.alignment,
                 board_number=board.board_number,
             ))
@@ -241,7 +254,6 @@ def _guillotine_full_pack(
     return boards, remaining
 
 
-# ─────────────── MaxRects Bin ───────────────
 class MaxRectsBin:
     __slots__ = ("width", "height", "kerf", "free_rects", "used_area")
 
@@ -315,9 +327,12 @@ class MaxRectsBin:
                 if i == j or j in remove:
                     continue
                 rj = self.free_rects[j]
-                if (ri[0] >= rj[0] and ri[1] >= rj[1]
+                if (
+                    ri[0] >= rj[0]
+                    and ri[1] >= rj[1]
                     and ri[0] + ri[2] <= rj[0] + rj[2]
-                    and ri[1] + ri[3] <= rj[1] + rj[3]):
+                    and ri[1] + ri[3] <= rj[1] + rj[3]
+                ):
                     remove.add(i)
                     break
         if remove:
@@ -362,9 +377,12 @@ def _maxrects_pack(
             bins[best_bin].place(best_x, best_y, best_pw, best_ph)
             boards[best_bin].placed_panels.append(PlacedPanel(
                 panel_index=unit.panel_index,
-                x=float(best_x), y=float(best_y),
-                width=float(best_pw), length=float(best_ph),
-                label=unit.label, rotated=best_rot,
+                x=float(best_x),
+                y=float(best_y),
+                width=float(best_pw),
+                length=float(best_ph),
+                label=unit.label,
+                rotated=best_rot,
                 grain_aligned=unit.panel.alignment,
                 board_number=boards[best_bin].board_number,
             ))
@@ -388,13 +406,17 @@ def _maxrects_pack(
                 bins.append(nb)
                 board = BoardState(
                     board_number=len(boards) + 1,
-                    board_width=float(bw), board_length=float(bl),
+                    board_width=float(bw),
+                    board_length=float(bl),
                 )
                 board.placed_panels.append(PlacedPanel(
                     panel_index=unit.panel_index,
-                    x=float(bx), y=float(by),
-                    width=float(bpw), length=float(bph),
-                    label=unit.label, rotated=brot,
+                    x=float(bx),
+                    y=float(by),
+                    width=float(bpw),
+                    length=float(bph),
+                    label=unit.label,
+                    rotated=brot,
                     grain_aligned=unit.panel.alignment,
                     board_number=board.board_number,
                 ))
@@ -406,7 +428,6 @@ def _maxrects_pack(
     return boards, impossible
 
 
-# ─────────────── Hybrid Guillotine + Gap Fill ───────────────
 def _hybrid_guillotine_pack(
     request, units: List[PanelUnit],
     bw: int, bl: int, kerf: int, sort_key,
@@ -450,9 +471,12 @@ def _hybrid_guillotine_pack(
                 filler.place(best_r[0], best_r[1], best_pw, best_ph)
                 board.placed_panels.append(PlacedPanel(
                     panel_index=unit.panel_index,
-                    x=float(best_r[0]), y=float(best_r[1]),
-                    width=float(best_pw), length=float(best_ph),
-                    label=unit.label, rotated=best_rot,
+                    x=float(best_r[0]),
+                    y=float(best_r[1]),
+                    width=float(best_pw),
+                    length=float(best_ph),
+                    label=unit.label,
+                    rotated=best_rot,
                     grain_aligned=unit.panel.alignment,
                     board_number=board.board_number,
                 ))
@@ -474,7 +498,6 @@ def _hybrid_guillotine_pack(
     return boards, still_remaining
 
 
-# ─────────────── Strategy Runner ───────────────
 def _run_all_strategies(
     request, units: List[PanelUnit],
     bw: int, bl: int, kerf: int,
@@ -529,7 +552,6 @@ def _run_all_strategies(
     return best_boards or [], best_imp, [f"Best: {best_name}"]
 
 
-# ─────────────── Validation ───────────────
 def _validate_boards(boards: List[BoardState], bw: float, bl: float) -> None:
     for b in boards:
         for i in range(len(b.placed_panels)):
@@ -548,12 +570,9 @@ def _validate_boards(boards: List[BoardState], bw: float, bl: float) -> None:
                     or pi.y + pi.length <= pj.y + EPS
                     or pj.y + pj.length <= pi.y + EPS
                 ):
-                    logger.error(
-                        f"Overlap board {b.board_number}: {pi.label} & {pj.label}"
-                    )
+                    logger.error(f"Overlap board {b.board_number}: {pi.label} & {pj.label}")
 
 
-# ─────────────── Cuts ───────────────
 def _generate_cuts(board: BoardState, kerf: int) -> list:
     from .schemas import CutSegment
 
@@ -571,22 +590,33 @@ def _generate_cuts(board: BoardState, kerf: int) -> list:
 
     for x in sorted(xs):
         cuts.append(CutSegment(
-            id=cid, orientation="vertical", direction="vertical",
-            x1=float(x), y1=0.0, x2=float(x), y2=float(board.board_length),
-            length=float(board.board_length), label=f"Rip at x={x:.1f}",
+            id=cid,
+            orientation="vertical",
+            direction="vertical",
+            x1=float(x),
+            y1=0.0,
+            x2=float(x),
+            y2=float(board.board_length),
+            length=float(board.board_length),
+            label=f"Rip at x={x:.1f}",
         ))
         cid += 1
     for y in sorted(ys):
         cuts.append(CutSegment(
-            id=cid, orientation="horizontal", direction="horizontal",
-            x1=0.0, y1=float(y), x2=float(board.board_width), y2=float(y),
-            length=float(board.board_width), label=f"Cross at y={y:.1f}",
+            id=cid,
+            orientation="horizontal",
+            direction="horizontal",
+            x1=0.0,
+            y1=float(y),
+            x2=float(board.board_width),
+            y2=float(y),
+            length=float(board.board_width),
+            label=f"Cross at y={y:.1f}",
         ))
         cid += 1
     return cuts
 
 
-# ─────────────── Edging ───────────────
 def _build_edging(request):
     from .schemas import EdgingSummary, EdgingDetail
 
@@ -597,10 +627,14 @@ def _build_edging(request):
         tem = p.total_edge_length_mm / 1000.0
         total_m += tem
         ea = "".join(
-            s[0].upper() for s, f in [
-                ("top", p.edging.top), ("right", p.edging.right),
-                ("bottom", p.edging.bottom), ("left", p.edging.left),
-            ] if f
+            s[0].upper()
+            for s, f in [
+                ("top", p.edging.top),
+                ("right", p.edging.right),
+                ("bottom", p.edging.bottom),
+                ("left", p.edging.left),
+            ]
+            if f
         ) or "None"
         details.append(EdgingDetail(
             panel_label=p.label or "Panel",
@@ -612,7 +646,6 @@ def _build_edging(request):
     return EdgingSummary(total_meters=total_m, details=details)
 
 
-# ─────────────── Summary ───────────────
 def _build_summary(
     request, boards, total_used, imp_labels, warnings,
     kerf_mm, bw, bl, total_panels, total_edging_m,
@@ -645,7 +678,6 @@ def _build_summary(
     )
 
 
-# ─────────────── Sticker Generation ───────────────
 def _generate_stickers(request, boards) -> list:
     from .schemas import StickerLabel
 
@@ -673,13 +705,12 @@ def _generate_stickers(request, boards) -> list:
                 company=request.board.company,
                 color_name=request.board.color_name,
                 notes=None,
-                qr_url=f"https://panelpro.app/track/{serial}",
+                qr_url=f"{PUBLIC_BASE_URL}/api/tracking/{serial}",
             ))
 
     return stickers
 
 
-# ─────────────── Layout Builder ───────────────
 def _work_to_layouts(
     request, boards_work: List[BoardState],
     impossible_units: List[PanelUnit],
@@ -732,10 +763,14 @@ def _work_to_layouts(
     edging = _build_edging(request)
 
     summary = _build_summary(
-        request, boards, total_used,
+        request,
+        boards,
+        total_used,
         [u.label for u in impossible_units],
         warnings,
-        float(kerf), float(bw), float(bl),
+        float(kerf),
+        float(bw),
+        float(bl),
         sum(int(p.quantity) for p in request.panels),
         edging.total_meters,
     )
@@ -745,11 +780,7 @@ def _work_to_layouts(
     return boards, summary, edging, stickers
 
 
-# ─────────────── MAIN ENTRY ───────────────
 def run_optimization(request) -> Tuple:
-    """
-    Returns: (boards, summary, edging, stickers) - 4 values as main.py expects.
-    """
     _ensure_request_options(request)
     bw, bl = _resolve_board_size(request)
     kerf = _get_kerf_mm(request)
