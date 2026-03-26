@@ -46,13 +46,12 @@ class Panel(BaseModel):
     alignment: GrainAlignment = GrainAlignment.none
     edging: Edging = Field(default_factory=Edging)
 
-    # ── per-panel board overrides ──
+    # per-panel board overrides
     board_type: Optional[str] = None
     thickness_mm: Optional[float] = None
     company: Optional[str] = None
     color_name: Optional[str] = None
 
-    # FIX 1 ─ guard against quantity < 1
     @model_validator(mode="after")
     def _clamp_quantity(self):
         if self.quantity < 1:
@@ -61,7 +60,6 @@ class Panel(BaseModel):
 
     @property
     def edge_length_mm(self) -> float:
-        """Edging length for ONE unit (mm)."""
         total = 0.0
         if self.edging.top:
             total += self.width
@@ -75,12 +73,9 @@ class Panel(BaseModel):
 
     @property
     def total_edge_length_mm(self) -> float:
-        """Edging length for ALL units (mm)."""
         return self.edge_length_mm * self.quantity
 
     def get_effective_board(self, default_board: BoardSpec) -> BoardSpec:
-        """Per-panel board override or fall-back to request-level board."""
-        # FIX 2 ─ only treat thickness as override when explicitly > 0
         has_override = any([
             self.board_type not in (None, ""),
             self.thickness_mm is not None and self.thickness_mm > 0,
@@ -89,7 +84,6 @@ class Panel(BaseModel):
         ])
         if not has_override:
             return default_board
-
         return BoardSpec(
             board_type=self.board_type or default_board.board_type,
             thickness_mm=(
@@ -112,7 +106,6 @@ class CuttingRequest(BaseModel):
     panels: List[Panel] = Field(default_factory=list)
     options: Optional[Options] = Field(default_factory=Options)
 
-    # FIX 3 ─ coerce `options: null` in JSON → Options()
     @model_validator(mode="after")
     def _ensure_options(self):
         if self.options is None:
@@ -136,7 +129,7 @@ class PlacedPanel(BaseModel):
 # ─────────────────── Cut Segment ───────────────────
 class CutSegment(BaseModel):
     id: int
-    orientation: str          # "vertical" | "horizontal"
+    orientation: str
     direction: str
     x1: float
     y1: float
@@ -257,6 +250,46 @@ class BOQSummary(BaseModel):
     pricing: Optional[PricingSummary] = None
 
 
+# ─────────────────── Stock Impact (NEW - fixes ImportError) ───────────────────
+class StockImpactItem(BaseModel):
+    """One row of stock impact: how many boards of a given type are needed."""
+    board_type: str = ""
+    thickness_mm: float = 0.0
+    company: str = ""
+    color_name: str = ""
+    width_mm: float = 0.0
+    length_mm: float = 0.0
+    boards_needed: int = 0
+    boards_available: int = 0
+    boards_after: int = 0
+    sufficient: bool = True
+    board_id: Optional[int] = None         # FK to BoardItem if matched
+    price_per_board: float = 0.0
+    total_price: float = 0.0
+
+
+class RemainingStockItem(BaseModel):
+    """Remaining stock for a board type after a job is confirmed."""
+    board_id: int
+    board_type: str = ""
+    thickness_mm: float = 0.0
+    company: str = ""
+    color_name: str = ""
+    width_mm: float = 0.0
+    length_mm: float = 0.0
+    previous_quantity: int = 0
+    deducted: int = 0
+    remaining_quantity: int = 0
+
+
+class StockImpactSummary(BaseModel):
+    """Wrapper returned by compute_stock_impact_from_selected_boards."""
+    items: List[StockImpactItem] = Field(default_factory=list)
+    all_sufficient: bool = True
+    total_boards_cost: float = 0.0
+    warnings: List[str] = Field(default_factory=list)
+
+
 # ─────────────────── Tracking ───────────────────
 class StickerTrackingResponse(BaseModel):
     serial_number: str
@@ -277,16 +310,14 @@ class HealthResponse(BaseModel):
 
 
 # ─────────────────── Full API Response ───────────────────
-# FIX 4 ─ added optional top-level `pricing` so the frontend
-#          can read it directly without digging into boq.pricing
 class CuttingResponse(BaseModel):
     request_summary: Dict[str, Any] = Field(default_factory=dict)
     optimization: OptimizationSummary = Field(default_factory=OptimizationSummary)
     layouts: List[BoardLayout] = Field(default_factory=list)
     edging: EdgingSummary = Field(default_factory=EdgingSummary)
     boq: Optional[BOQSummary] = None
-    pricing: Optional[PricingSummary] = None       # ← NEW
+    pricing: Optional[PricingSummary] = None
     stickers: List[StickerLabel] = Field(default_factory=list)
-    stock_impact: Any = None
+    stock_impact: Optional[StockImpactSummary] = None   # typed now
     report_id: str = ""
     generated_at: Optional[datetime] = None
