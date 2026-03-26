@@ -6,7 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal
-from .job_service import get_job_report, parse_stock_impact, confirm_job_stock_deduction
+from .job_service import (
+    get_job_report,
+    parse_stock_impact,
+    confirm_job_stock_deduction,
+)
 from .schemas import JobConfirmResponse
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
