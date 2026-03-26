@@ -29,6 +29,7 @@ class BoardSpec(BaseModel):
     color_name: str = ""
     width_mm: float = 2440.0
     length_mm: float = 1220.0
+    price_per_board: float = 0.0
 
 
 class Options(BaseModel):
@@ -50,6 +51,7 @@ class Panel(BaseModel):
     thickness_mm: Optional[float] = None
     company: Optional[str] = None
     color_name: Optional[str] = None
+    price_per_board: Optional[float] = None
 
     @model_validator(mode="after")
     def _clamp_quantity(self):
@@ -80,6 +82,7 @@ class Panel(BaseModel):
             self.thickness_mm is not None and self.thickness_mm > 0,
             self.company not in (None, ""),
             self.color_name not in (None, ""),
+            self.price_per_board is not None,
         ])
         if not has_override:
             return default_board
@@ -95,6 +98,11 @@ class Panel(BaseModel):
             color_name=self.color_name or default_board.color_name,
             width_mm=default_board.width_mm,
             length_mm=default_board.length_mm,
+            price_per_board=(
+                self.price_per_board
+                if self.price_per_board is not None
+                else default_board.price_per_board
+            ),
         )
 
 
