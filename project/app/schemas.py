@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -46,7 +46,6 @@ class Panel(BaseModel):
     alignment: GrainAlignment = GrainAlignment.none
     edging: Edging = Field(default_factory=Edging)
 
-    # per-panel board overrides
     board_type: Optional[str] = None
     thickness_mm: Optional[float] = None
     company: Optional[str] = None
@@ -84,6 +83,7 @@ class Panel(BaseModel):
         ])
         if not has_override:
             return default_board
+
         return BoardSpec(
             board_type=self.board_type or default_board.board_type,
             thickness_mm=(
@@ -250,44 +250,20 @@ class BOQSummary(BaseModel):
     pricing: Optional[PricingSummary] = None
 
 
-# ─────────────────── Stock Impact (NEW - fixes ImportError) ───────────────────
+# ─────────────────── Stock Impact ───────────────────
 class StockImpactItem(BaseModel):
-    """One row of stock impact: how many boards of a given type are needed."""
-    board_type: str = ""
-    thickness_mm: float = 0.0
-    company: str = ""
-    color_name: str = ""
-    width_mm: float = 0.0
-    length_mm: float = 0.0
-    boards_needed: int = 0
-    boards_available: int = 0
-    boards_after: int = 0
-    sufficient: bool = True
-    board_id: Optional[int] = None         # FK to BoardItem if matched
+    board_item_id: int
+    board_label: str = ""
+    current_quantity: int = 0
+    required_quantity: int = 0
+    projected_balance: int = 0
     price_per_board: float = 0.0
-    total_price: float = 0.0
+    stock_status: str = ""
 
 
 class RemainingStockItem(BaseModel):
-    """Remaining stock for a board type after a job is confirmed."""
-    board_id: int
-    board_type: str = ""
-    thickness_mm: float = 0.0
-    company: str = ""
-    color_name: str = ""
-    width_mm: float = 0.0
-    length_mm: float = 0.0
-    previous_quantity: int = 0
-    deducted: int = 0
-    remaining_quantity: int = 0
-
-
-class StockImpactSummary(BaseModel):
-    """Wrapper returned by compute_stock_impact_from_selected_boards."""
-    items: List[StockImpactItem] = Field(default_factory=list)
-    all_sufficient: bool = True
-    total_boards_cost: float = 0.0
-    warnings: List[str] = Field(default_factory=list)
+    board_item_id: int
+    quantity: int = 0
 
 
 # ─────────────────── Tracking ───────────────────
@@ -304,9 +280,15 @@ class StickerTrackingResponse(BaseModel):
 # ─────────────────── Health ───────────────────
 class HealthResponse(BaseModel):
     status: str = "healthy"
-    timestamp: str = Field(
-        default_factory=lambda: datetime.utcnow().isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+# ─────────────────── Job Confirmation ───────────────────
+class JobConfirmResponse(BaseModel):
+    success: bool = True
+    message: str = ""
+    boards_deducted: int = 0
+    remaining_stock: List[RemainingStockItem] = Field(default_factory=list)
 
 
 # ─────────────────── Full API Response ───────────────────
@@ -318,6 +300,6 @@ class CuttingResponse(BaseModel):
     boq: Optional[BOQSummary] = None
     pricing: Optional[PricingSummary] = None
     stickers: List[StickerLabel] = Field(default_factory=list)
-    stock_impact: Optional[StockImpactSummary] = None   # typed now
+    stock_impact: Optional[List[StockImpactItem]] = None
     report_id: str = ""
     generated_at: Optional[datetime] = None
