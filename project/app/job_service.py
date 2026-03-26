@@ -11,11 +11,20 @@ from .schemas import StockImpactItem, RemainingStockItem
 from .stock_service import deduct_stock, get_stock_status
 
 
-def save_job_report(db: Session, report_id: str, request_json: dict, stock_impact: list[StockImpactItem]):
+def save_job_report(db: Session, report_id: str, request_json: dict, stock_impact):
+    serialized_stock_impact = []
+    for item in stock_impact or []:
+        if hasattr(item, "model_dump"):
+            serialized_stock_impact.append(item.model_dump())
+        elif isinstance(item, dict):
+            serialized_stock_impact.append(item)
+        else:
+            serialized_stock_impact.append({"value": str(item)})
+
     job = JobReport(
         report_id=report_id,
         request_json=json.dumps(request_json),
-        stock_impact_json=json.dumps([item.model_dump() for item in stock_impact]),
+        stock_impact_json=json.dumps(serialized_stock_impact),
         confirmed=False,
     )
     db.add(job)
@@ -44,7 +53,6 @@ def confirm_job_stock_deduction(db: Session, job: JobReport):
 
     remaining_stock: list[RemainingStockItem] = []
     total_deducted = 0
-
     item_map: dict[int, BoardItem] = {}
 
     for row in stock_impact:
@@ -94,18 +102,16 @@ def confirm_job_stock_deduction(db: Session, job: JobReport):
 
 
 def aggregate_board_requirements_from_layouts(layouts: list) -> list[tuple[int, int]]:
-    """
-    Count actual boards used from optimization layouts.
-    One layout row = one physical board consumed.
-    """
     aggregated = defaultdict(int)
 
     for layout in layouts:
         material = getattr(layout, "material", None) or {}
         board_item_id = material.get("board_item_id")
 
-        if board_item_id:
-            aggregated[int(board_item_id)] += 1
+        if board_item_id is None:
+            continue
+
+        aggregated[int(board_item_id)] += 1
 
     return [(board_item_id, qty) for board_item_id, qty in aggregated.items()]
 
@@ -120,7 +126,11 @@ def compute_stock_impact_from_selected_boards(db: Session, board_requirements: l
 
         current_quantity = item.quantity
         projected_balance = current_quantity - required_qty
-        label = f"{item.board_type} {item.thickness_mm}mm {item.color_name} {item.company} {int(item.width_mm)}x{int(item.length_mm)}"
+        label = (
+            f"{item.board_type} {item.thickness_mm}mm "
+            f"{item.color_name} {item.company} "
+            f"{int(item.width_mm)}x{int(item.length_mm)}"
+        )
 
         result.append(
             StockImpactItem(
