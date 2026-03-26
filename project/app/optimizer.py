@@ -2,22 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Tuple, Optional, Any
 import logging
 import math
-
-if TYPE_CHECKING:
-    from .schemas import (
-        BoardLayout,
-        CuttingRequest,
-        CutSegment,
-        EdgingDetail,
-        EdgingSummary,
-        GrainAlignment,
-        OptimizationSummary,
-        Options,
-        PlacedPanel,
-    )
+from uuid import uuid4
 
 logger = logging.getLogger("panelpro")
 
@@ -46,32 +34,6 @@ class BoardState:
 
 
 # ───────────────────── Helpers ─────────────────────
-def _get_schemas():
-    """Lazy import to avoid circular imports."""
-    from .schemas import (
-        BoardLayout,
-        CuttingRequest,
-        CutSegment,
-        EdgingDetail,
-        EdgingSummary,
-        GrainAlignment,
-        OptimizationSummary,
-        Options,
-        PlacedPanel,
-    )
-    return {
-        "BoardLayout": BoardLayout,
-        "CuttingRequest": CuttingRequest,
-        "CutSegment": CutSegment,
-        "EdgingDetail": EdgingDetail,
-        "EdgingSummary": EdgingSummary,
-        "GrainAlignment": GrainAlignment,
-        "OptimizationSummary": OptimizationSummary,
-        "Options": Options,
-        "PlacedPanel": PlacedPanel,
-    }
-
-
 def _ensure_request_options(request) -> None:
     from .schemas import Options
     if request.options is None:
@@ -183,8 +145,8 @@ def _guillotine_pack_rect(
     if not remaining or rect.w <= 0 or rect.h <= 0:
         return
 
-    min_w = min(min(u.width, u.length) for u in remaining)
-    if rect.w < min_w and rect.h < min_w:
+    min_dim = min(min(u.width, u.length) for u in remaining)
+    if rect.w < min_dim and rect.h < min_dim:
         return
 
     result = _guillotine_best_fit(rect, remaining, request, bw, bl, kerf)
@@ -470,7 +432,7 @@ def _hybrid_guillotine_pack(
         new_remaining = []
         for unit in still_remaining:
             orientations = _get_orientations(unit, request, bw, bl)
-            placed = False
+            placed_unit = False
             best_r = None
             best_pw = best_ph = 0
             best_rot = False
@@ -482,9 +444,9 @@ def _hybrid_guillotine_pack(
                     best_s = (r[2], r[3])
                     best_r = r
                     best_pw, best_ph, best_rot = pw, ph, rot
-                    placed = True
+                    placed_unit = True
 
-            if placed and best_r:
+            if placed_unit and best_r:
                 filler.place(best_r[0], best_r[1], best_pw, best_ph)
                 board.placed_panels.append(PlacedPanel(
                     panel_index=unit.panel_index,
@@ -625,7 +587,7 @@ def _generate_cuts(board: BoardState, kerf: int) -> list:
 
 
 # ─────────────── Edging ───────────────
-def _build_edging(request) -> Any:
+def _build_edging(request):
     from .schemas import EdgingSummary, EdgingDetail
 
     total_m = 0.0
@@ -683,13 +645,47 @@ def _build_summary(
     )
 
 
+# ─────────────── Sticker Generation ───────────────
+def _generate_stickers(request, boards) -> list:
+    from .schemas import StickerLabel
+
+    stickers = []
+    serial_counter = 1
+
+    for board_layout in boards:
+        for panel in board_layout.panels:
+            serial = f"STK-{uuid4().hex[:8].upper()}-{serial_counter:04d}"
+            serial_counter += 1
+
+            stickers.append(StickerLabel(
+                serial_number=serial,
+                panel_label=panel.label or "Panel",
+                width=panel.width,
+                length=panel.length,
+                board_number=board_layout.board_number,
+                x=panel.x,
+                y=panel.y,
+                rotated=panel.rotated,
+                project_name=request.project_name,
+                customer_name=request.customer_name,
+                board_type=request.board.board_type,
+                thickness_mm=request.board.thickness_mm,
+                company=request.board.company,
+                color_name=request.board.color_name,
+                notes=None,
+                qr_url=f"https://panelpro.app/track/{serial}",
+            ))
+
+    return stickers
+
+
 # ─────────────── Layout Builder ───────────────
 def _work_to_layouts(
     request, boards_work: List[BoardState],
     impossible_units: List[PanelUnit],
     warnings: Optional[List[str]] = None,
 ) -> Tuple:
-    from .schemas import BoardLayout, EdgingSummary
+    from .schemas import BoardLayout
 
     bw, bl = _resolve_board_size(request)
     kerf = _get_kerf_mm(request)
@@ -734,6 +730,7 @@ def _work_to_layouts(
         ))
 
     edging = _build_edging(request)
+
     summary = _build_summary(
         request, boards, total_used,
         [u.label for u in impossible_units],
@@ -742,11 +739,17 @@ def _work_to_layouts(
         sum(int(p.quantity) for p in request.panels),
         edging.total_meters,
     )
-    return boards, summary, edging
+
+    stickers = _generate_stickers(request, boards)
+
+    return boards, summary, edging, stickers
 
 
 # ─────────────── MAIN ENTRY ───────────────
 def run_optimization(request) -> Tuple:
+    """
+    Returns: (boards, summary, edging, stickers) - 4 values as main.py expects.
+    """
     _ensure_request_options(request)
     bw, bl = _resolve_board_size(request)
     kerf = _get_kerf_mm(request)
