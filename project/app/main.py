@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from datetime import datetime
 from typing import Any, Dict
 from uuid import uuid4
@@ -13,29 +14,65 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-logger = logging.getLogger("panelpro")
+# Configure logging FIRST - ensure output goes to stdout for Render
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+logger = logging.getLogger("panelpro")
 
+# Force flush stdout
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+
+logger.info("=" * 50)
+logger.info("Starting PanelPro - Cutting Optimizer")
+logger.info("=" * 50)
+
+# Environment variables
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 REQUIRE_ADMIN_API_KEY = os.getenv("REQUIRE_ADMIN_API_KEY", "false").lower() == "true"
+PORT = int(os.getenv("PORT", 10000))
 
-app = FastAPI(title="PanelPro - Cutting Optimizer")
+logger.info(f"PORT: {PORT}")
+logger.info(f"REQUIRE_ADMIN_API_KEY: {REQUIRE_ADMIN_API_KEY}")
 
-# --- DB setup (lazy to avoid circular) ---
+# Create FastAPI app
+app = FastAPI(
+    title="PanelPro - Cutting Optimizer",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+
+# --- Database setup with error handling ---
 def _init_db():
-    from app.db import engine
-    from app.models import Base
-    Base.metadata.create_all(bind=engine)
+    try:
+        logger.info("Initializing database connection...")
+        from app.db import engine
+        from app.models import Base
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database initialized successfully!")
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+        logger.warning("App will continue but database features may not work")
 
+
+# Initialize database
 _init_db()
 
-if os.path.isdir("static"):
-    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# --- Mount static files ---
+try:
+    if os.path.isdir("static"):
+        app.mount("/static", StaticFiles(directory="static"), name="static")
+        logger.info("Static files directory mounted")
+except Exception as e:
+    logger.warning(f"Could not mount static files: {e}")
 
 
+# --- CORS Configuration ---
 def parse_allowed_origins() -> list[str]:
     env_value = os.getenv("ALLOWED_ORIGINS", "").strip()
     if env_value:
@@ -43,13 +80,14 @@ def parse_allowed_origins() -> list[str]:
     return [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "https://impala-panel-optimzier.onrender.com",
     ]
 
 
 origins = parse_allowed_origins()
-logger.info("Allowed CORS origins: %s", origins)
-logger.info("Require admin API key: %s", REQUIRE_ADMIN_API_KEY)
+logger.info(f"Allowed CORS origins: {origins}")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,16 +97,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Include routers lazily ---
+
+# --- Include routers with error handling ---
 def _include_routers():
-    from app.stock_routes import router as board_router
-    from app.job_routes import router as job_router
-    app.include_router(board_router, prefix="/api")
-    app.include_router(job_router, prefix="/api")
+    try:
+        from app.stock_routes import router as board_router
+        from app.job_routes import router as job_router
+        app.include_router(board_router, prefix="/api")
+        app.include_router(job_router, prefix="/api")
+        logger.info("Routers included successfully")
+    except Exception as e:
+        logger.error(f"Failed to include routers: {e}")
+        raise
+
 
 _include_routers()
 
 
+# --- Database dependency ---
 def get_db():
     from app.db import SessionLocal
     db = SessionLocal()
@@ -78,6 +124,7 @@ def get_db():
         db.close()
 
 
+# --- Admin API key check ---
 def require_admin_api_key(x_api_key: str | None):
     if not REQUIRE_ADMIN_API_KEY:
         return
@@ -87,6 +134,7 @@ def require_admin_api_key(x_api_key: str | None):
         raise HTTPException(status_code=403, detail="Invalid admin API key")
 
 
+# --- Helper functions ---
 def serialize_tracking(item) -> Dict[str, Any]:
     return {
         "serial_number": item.serial_number,
@@ -99,23 +147,48 @@ def serialize_tracking(item) -> Dict[str, Any]:
     }
 
 
+# --- Exception handlers ---
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.warning(f"Validation error on {request.method} {request.url.path}: {exc.errors()}")
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled server error on %s %s", request.method, request.url.path)
+    logger.exception(f"Unhandled server error on {request.method} {request.url.path}")
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+# --- Root and Health endpoints ---
+@app.get("/")
+async def root():
+    """Root endpoint - confirms API is running"""
+    return {
+        "status": "ok",
+        "message": "PanelPro Cutting Optimizer API",
+        "version": "1.0.0",
+        "docs": "/docs",
+    }
 
 
 @app.get("/health")
 async def health():
-    from app.schemas import HealthResponse
-    return HealthResponse()
+    """Health check endpoint"""
+    try:
+        from app.schemas import HealthResponse
+        return HealthResponse()
+    except Exception:
+        return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 
+@app.get("/api/health")
+async def api_health():
+    """API health check"""
+    return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
+
+
+# --- Board catalog endpoint ---
 @app.get("/api/boards/catalog")
 async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
     from app.models import BoardItem
@@ -140,6 +213,7 @@ async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
     }
 
 
+# --- BOQ Builder ---
 def build_boq(request, optimization, edging, pricing):
     from app.schemas import BOQItem, BOQSummary
     from app.config import CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER
@@ -210,6 +284,7 @@ def build_boq(request, optimization, edging, pricing):
     )
 
 
+# --- Sticker tracking seed ---
 def seed_sticker_tracking(db: Session, report_id: str, stickers):
     from app.models import StickerTracking
     for s in stickers:
@@ -231,6 +306,7 @@ def seed_sticker_tracking(db: Session, report_id: str, stickers):
     db.commit()
 
 
+# --- Optimization endpoint ---
 @app.post("/api/optimize")
 async def api_optimize(req: dict, db: Session = Depends(get_db)):
     from app.schemas import CuttingRequest, CuttingResponse
@@ -245,6 +321,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     try:
         cutting_req = CuttingRequest(**req)
     except Exception as e:
+        logger.error(f"Invalid request: {e}")
         raise HTTPException(status_code=422, detail=f"Invalid request: {str(e)}")
 
     try:
@@ -288,6 +365,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     )
 
 
+# --- PDF Report endpoint ---
 @app.post("/api/optimize/report")
 async def export_report_pdf(req: dict, db: Session = Depends(get_db)):
     from app.schemas import CuttingRequest
@@ -328,6 +406,7 @@ async def export_report_pdf(req: dict, db: Session = Depends(get_db)):
     )
 
 
+# --- Labels PDF endpoint ---
 @app.post("/api/optimize/labels")
 async def export_labels_pdf(req: dict, db: Session = Depends(get_db)):
     from app.schemas import CuttingRequest
@@ -350,6 +429,7 @@ async def export_labels_pdf(req: dict, db: Session = Depends(get_db)):
     )
 
 
+# --- Tracking endpoints ---
 @app.get("/api/tracking/{serial_number}")
 async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
     from app.models import StickerTracking
@@ -421,3 +501,31 @@ async def advance_tracking_status(
     db.refresh(item)
 
     return {"status": "ok", "tracking": serialize_tracking(item)}
+
+
+# --- Startup event ---
+@app.on_event("startup")
+async def startup_event():
+    logger.info("=" * 50)
+    logger.info("PanelPro API started successfully!")
+    logger.info(f"Listening on port: {PORT}")
+    logger.info("API Documentation: /docs")
+    logger.info("=" * 50)
+
+
+# --- Shutdown event ---
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("PanelPro API shutting down...")
+
+
+# --- For local development ---
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=PORT,
+        reload=True,
+        log_level="info",
+    )
