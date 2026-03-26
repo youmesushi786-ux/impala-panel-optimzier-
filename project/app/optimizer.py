@@ -5,8 +5,7 @@ import math
 import logging
 from uuid import uuid4
 from dataclasses import dataclass, field
-from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Any
+from typing import List, Tuple, Optional
 
 logger = logging.getLogger("panelpro")
 
@@ -17,7 +16,6 @@ PUBLIC_BASE_URL = os.getenv(
 ).rstrip("/")
 
 
-# ───────────────────── Data ─────────────────────
 @dataclass(slots=True)
 class PanelUnit:
     panel_index: int
@@ -38,7 +36,6 @@ class BoardState:
     used_area: float = 0.0
 
 
-# ───────────────────── Helpers ─────────────────────
 def _ensure_request_options(request) -> None:
     from .schemas import Options
     if request.options is None:
@@ -90,9 +87,7 @@ def _expand_panel_units(request) -> List[PanelUnit]:
     return units
 
 
-def _get_orientations(
-    unit: PanelUnit, request, bw: int, bl: int
-) -> List[Tuple[int, int, bool]]:
+def _get_orientations(unit: PanelUnit, request, bw: int, bl: int) -> List[Tuple[int, int, bool]]:
     out = []
     if unit.width <= bw and unit.length <= bl:
         out.append((unit.width, unit.length, False))
@@ -106,7 +101,6 @@ def _get_orientations(
     return out
 
 
-# ─────────────── Guillotine Recursive Packer ───────────────
 @dataclass
 class GRect:
     x: int
@@ -119,11 +113,7 @@ class GRect:
         return self.w * self.h
 
 
-def _guillotine_best_fit(
-    rect: GRect,
-    remaining: List[PanelUnit],
-    request, bw: int, bl: int, kerf: int,
-) -> Optional[Tuple[int, int, int, bool]]:
+def _guillotine_best_fit(rect: GRect, remaining: List[PanelUnit], request, bw: int, bl: int, kerf: int):
     best_idx = -1
     best_w = best_h = 0
     best_rot = False
@@ -133,9 +123,7 @@ def _guillotine_best_fit(
         for pw, ph, rot in _get_orientations(unit, request, bw, bl):
             if pw <= rect.w and ph <= rect.h:
                 waste = rect.area - (pw * ph)
-                if waste < best_waste or (
-                    waste == best_waste and pw * ph > best_w * best_h
-                ):
+                if waste < best_waste or (waste == best_waste and pw * ph > best_w * best_h):
                     best_waste = waste
                     best_idx = i
                     best_w = pw
@@ -145,12 +133,27 @@ def _guillotine_best_fit(
     return (best_idx, best_w, best_h, best_rot) if best_idx >= 0 else None
 
 
-def _guillotine_pack_rect(
-    rect: GRect,
-    remaining: List[PanelUnit],
-    request, bw: int, bl: int, kerf: int,
-    placements: List[Tuple[PanelUnit, int, int, int, int, bool]],
-) -> None:
+def _make_placed_panel(unit, x, y, pw, ph, rotated, board_number):
+    from .schemas import PlacedPanel
+    return PlacedPanel(
+        panel_index=unit.panel_index,
+        x=float(x),
+        y=float(y),
+        width=float(pw),
+        length=float(ph),
+        footprint_width=float(pw),
+        footprint_length=float(ph),
+        original_width=float(unit.width),
+        original_length=float(unit.length),
+        label=unit.label,
+        notes=getattr(unit.panel, "notes", None),
+        rotated=rotated,
+        grain_aligned=unit.panel.alignment,
+        board_number=board_number,
+    )
+
+
+def _guillotine_pack_rect(rect: GRect, remaining: List[PanelUnit], request, bw: int, bl: int, kerf: int, placements):
     if not remaining or rect.w <= 0 or rect.h <= 0:
         return
 
@@ -197,33 +200,20 @@ def _guillotine_pack_rect(
             _guillotine_pack_rect(r2, remaining, request, bw, bl, kerf, placements)
             _guillotine_pack_rect(r1, remaining, request, bw, bl, kerf, placements)
     elif right_w > 0:
-        _guillotine_pack_rect(
-            GRect(rect.x + pw + kerf, rect.y, right_w, rect.h),
-            remaining, request, bw, bl, kerf, placements,
-        )
+        _guillotine_pack_rect(GRect(rect.x + pw + kerf, rect.y, right_w, rect.h), remaining, request, bw, bl, kerf, placements)
     elif bottom_h > 0:
-        _guillotine_pack_rect(
-            GRect(rect.x, rect.y + ph + kerf, rect.w, bottom_h),
-            remaining, request, bw, bl, kerf, placements,
-        )
+        _guillotine_pack_rect(GRect(rect.x, rect.y + ph + kerf, rect.w, bottom_h), remaining, request, bw, bl, kerf, placements)
 
 
-def _guillotine_full_pack(
-    request, units: List[PanelUnit],
-    bw: int, bl: int, kerf: int, sort_key,
-) -> Tuple[List[BoardState], List[PanelUnit]]:
-    from .schemas import PlacedPanel
-
+def _guillotine_full_pack(request, units: List[PanelUnit], bw: int, bl: int, kerf: int, sort_key):
     remaining = sorted(list(units), key=sort_key)
     boards: List[BoardState] = []
 
     while remaining:
-        placements: List[Tuple[PanelUnit, int, int, int, int, bool]] = []
+        placements = []
         before = len(remaining)
 
-        _guillotine_pack_rect(
-            GRect(0, 0, bw, bl), remaining, request, bw, bl, kerf, placements
-        )
+        _guillotine_pack_rect(GRect(0, 0, bw, bl), remaining, request, bw, bl, kerf, placements)
 
         if not placements:
             break
@@ -234,17 +224,7 @@ def _guillotine_full_pack(
             board_length=float(bl),
         )
         for unit, x, y, pw, ph, rotated in placements:
-            board.placed_panels.append(PlacedPanel(
-                panel_index=unit.panel_index,
-                x=float(x),
-                y=float(y),
-                width=float(pw),
-                length=float(ph),
-                label=unit.label,
-                rotated=rotated,
-                grain_aligned=unit.panel.alignment,
-                board_number=board.board_number,
-            ))
+            board.placed_panels.append(_make_placed_panel(unit, x, y, pw, ph, rotated, board.board_number))
             board.used_area += pw * ph
         boards.append(board)
 
@@ -261,10 +241,10 @@ class MaxRectsBin:
         self.width = w
         self.height = h
         self.kerf = kerf
-        self.free_rects: List[List[int]] = [[0, 0, w, h]]
-        self.used_area: int = 0
+        self.free_rects = [[0, 0, w, h]]
+        self.used_area = 0
 
-    def find_best(self, pw: int, ph: int, method: int = 0) -> Optional[Tuple[int, int, int, int]]:
+    def find_best(self, pw: int, ph: int, method: int = 0):
         best_x = best_y = -1
         best_s1 = best_s2 = 999999999
 
@@ -284,7 +264,7 @@ class MaxRectsBin:
 
         return (best_x, best_y, best_s1, best_s2) if best_x >= 0 else None
 
-    def place(self, px: int, py: int, pw: int, ph: int) -> None:
+    def place(self, px: int, py: int, pw: int, ph: int):
         self.used_area += pw * ph
         k = self.kerf
         ow = pw + k if px + pw + k <= self.width else pw
@@ -293,8 +273,7 @@ class MaxRectsBin:
         new_rects = []
         i = 0
         while i < len(self.free_rects):
-            r = self.free_rects[i]
-            rx, ry, rw, rh = r
+            rx, ry, rw, rh = self.free_rects[i]
             if px >= rx + rw or px + ow <= rx or py >= ry + rh or py + oh <= ry:
                 i += 1
                 continue
@@ -311,7 +290,7 @@ class MaxRectsBin:
         self.free_rects.extend(new_rects)
         self._prune()
 
-    def _prune(self) -> None:
+    def _prune(self):
         n = len(self.free_rects)
         if n <= 1:
             return
@@ -328,8 +307,7 @@ class MaxRectsBin:
                     continue
                 rj = self.free_rects[j]
                 if (
-                    ri[0] >= rj[0]
-                    and ri[1] >= rj[1]
+                    ri[0] >= rj[0] and ri[1] >= rj[1]
                     and ri[0] + ri[2] <= rj[0] + rj[2]
                     and ri[1] + ri[3] <= rj[1] + rj[3]
                 ):
@@ -339,17 +317,11 @@ class MaxRectsBin:
             self.free_rects = [self.free_rects[i] for i in range(n) if i not in remove]
 
 
-def _maxrects_pack(
-    request, units: List[PanelUnit],
-    bw: int, bl: int, kerf: int,
-    sort_key, method: int,
-) -> Tuple[List[BoardState], List[PanelUnit]]:
-    from .schemas import PlacedPanel
-
+def _maxrects_pack(request, units: List[PanelUnit], bw: int, bl: int, kerf: int, sort_key, method: int):
     sorted_units = sorted(units, key=sort_key)
-    bins: List[MaxRectsBin] = []
-    boards: List[BoardState] = []
-    impossible: List[PanelUnit] = []
+    bins = []
+    boards = []
+    impossible = []
 
     for unit in sorted_units:
         orientations = _get_orientations(unit, request, bw, bl)
@@ -375,17 +347,9 @@ def _maxrects_pack(
 
         if placed:
             bins[best_bin].place(best_x, best_y, best_pw, best_ph)
-            boards[best_bin].placed_panels.append(PlacedPanel(
-                panel_index=unit.panel_index,
-                x=float(best_x),
-                y=float(best_y),
-                width=float(best_pw),
-                length=float(best_ph),
-                label=unit.label,
-                rotated=best_rot,
-                grain_aligned=unit.panel.alignment,
-                board_number=boards[best_bin].board_number,
-            ))
+            boards[best_bin].placed_panels.append(
+                _make_placed_panel(unit, best_x, best_y, best_pw, best_ph, best_rot, boards[best_bin].board_number)
+            )
             boards[best_bin].used_area += best_pw * best_ph
         else:
             nb = MaxRectsBin(bw, bl, kerf)
@@ -409,17 +373,7 @@ def _maxrects_pack(
                     board_width=float(bw),
                     board_length=float(bl),
                 )
-                board.placed_panels.append(PlacedPanel(
-                    panel_index=unit.panel_index,
-                    x=float(bx),
-                    y=float(by),
-                    width=float(bpw),
-                    length=float(bph),
-                    label=unit.label,
-                    rotated=brot,
-                    grain_aligned=unit.panel.alignment,
-                    board_number=board.board_number,
-                ))
+                board.placed_panels.append(_make_placed_panel(unit, bx, by, bpw, bph, brot, board.board_number))
                 board.used_area += bpw * bph
                 boards.append(board)
             else:
@@ -428,12 +382,7 @@ def _maxrects_pack(
     return boards, impossible
 
 
-def _hybrid_guillotine_pack(
-    request, units: List[PanelUnit],
-    bw: int, bl: int, kerf: int, sort_key,
-) -> Tuple[List[BoardState], List[PanelUnit]]:
-    from .schemas import PlacedPanel
-
+def _hybrid_guillotine_pack(request, units: List[PanelUnit], bw: int, bl: int, kerf: int, sort_key):
     boards, remaining = _guillotine_full_pack(request, units, bw, bl, kerf, sort_key)
 
     if not remaining:
@@ -469,26 +418,16 @@ def _hybrid_guillotine_pack(
 
             if placed_unit and best_r:
                 filler.place(best_r[0], best_r[1], best_pw, best_ph)
-                board.placed_panels.append(PlacedPanel(
-                    panel_index=unit.panel_index,
-                    x=float(best_r[0]),
-                    y=float(best_r[1]),
-                    width=float(best_pw),
-                    length=float(best_ph),
-                    label=unit.label,
-                    rotated=best_rot,
-                    grain_aligned=unit.panel.alignment,
-                    board_number=board.board_number,
-                ))
+                board.placed_panels.append(
+                    _make_placed_panel(unit, best_r[0], best_r[1], best_pw, best_ph, best_rot, board.board_number)
+                )
                 board.used_area += best_pw * best_ph
             else:
                 new_remaining.append(unit)
         still_remaining = new_remaining
 
     if still_remaining:
-        extra, still_remaining = _guillotine_full_pack(
-            request, still_remaining, bw, bl, kerf, sort_key
-        )
+        extra, still_remaining = _guillotine_full_pack(request, still_remaining, bw, bl, kerf, sort_key)
         for eb in extra:
             eb.board_number = len(boards) + 1
             for p in eb.placed_panels:
@@ -498,10 +437,7 @@ def _hybrid_guillotine_pack(
     return boards, still_remaining
 
 
-def _run_all_strategies(
-    request, units: List[PanelUnit],
-    bw: int, bl: int, kerf: int,
-) -> Tuple[List[BoardState], List[PanelUnit], List[str]]:
+def _run_all_strategies(request, units: List[PanelUnit], bw: int, bl: int, kerf: int):
     sort_keys = {
         "area": lambda u: (-u.area, -max(u.width, u.length)),
         "maxdim": lambda u: (-max(u.width, u.length), -u.area),
@@ -510,13 +446,13 @@ def _run_all_strategies(
         "length": lambda u: (-u.length, -u.width, -u.area),
     }
 
-    best_boards: Optional[List[BoardState]] = None
-    best_imp: List[PanelUnit] = list(units)
+    best_boards = None
+    best_imp = list(units)
     best_key = None
     best_name = ""
     board_area = bw * bl
 
-    def evaluate(name: str, boards: List[BoardState], imp: List[PanelUnit]):
+    def evaluate(name: str, boards, imp):
         nonlocal best_boards, best_imp, best_key, best_name
         if not boards and imp:
             return
@@ -526,7 +462,6 @@ def _run_all_strategies(
         key = (len(imp), len(boards), waste, -total_used)
         eff = total_used / (n_boards * board_area) * 100 if boards else 0
         logger.info(f"  {name}: {len(boards)} boards, eff={eff:.1f}%")
-
         if best_key is None or key < best_key:
             best_key = key
             best_boards = boards
@@ -552,7 +487,7 @@ def _run_all_strategies(
     return best_boards or [], best_imp, [f"Best: {best_name}"]
 
 
-def _validate_boards(boards: List[BoardState], bw: float, bl: float) -> None:
+def _validate_boards(boards, bw: float, bl: float):
     for b in boards:
         for i in range(len(b.placed_panels)):
             pi = b.placed_panels[i]
@@ -562,18 +497,9 @@ def _validate_boards(boards: List[BoardState], bw: float, bl: float) -> None:
                 logger.warning(f"{pi.label} exceeds width")
             if pi.y + pi.length > bl + EPS:
                 logger.warning(f"{pi.label} exceeds length")
-            for j in range(i + 1, len(b.placed_panels)):
-                pj = b.placed_panels[j]
-                if not (
-                    pi.x + pi.width <= pj.x + EPS
-                    or pj.x + pj.width <= pi.x + EPS
-                    or pi.y + pi.length <= pj.y + EPS
-                    or pj.y + pj.length <= pi.y + EPS
-                ):
-                    logger.error(f"Overlap board {b.board_number}: {pi.label} & {pj.label}")
 
 
-def _generate_cuts(board: BoardState, kerf: int) -> list:
+def _generate_cuts(board: BoardState, kerf: int):
     from .schemas import CutSegment
 
     cuts = []
@@ -590,30 +516,22 @@ def _generate_cuts(board: BoardState, kerf: int) -> list:
 
     for x in sorted(xs):
         cuts.append(CutSegment(
-            id=cid,
-            orientation="vertical",
-            direction="vertical",
-            x1=float(x),
-            y1=0.0,
-            x2=float(x),
-            y2=float(board.board_length),
-            length=float(board.board_length),
-            label=f"Rip at x={x:.1f}",
+            id=cid, sequence=cid,
+            orientation="vertical", direction="vertical",
+            x1=float(x), y1=0.0, x2=float(x), y2=float(board.board_length),
+            length=float(board.board_length), label=f"Rip at x={x:.1f}",
         ))
         cid += 1
+
     for y in sorted(ys):
         cuts.append(CutSegment(
-            id=cid,
-            orientation="horizontal",
-            direction="horizontal",
-            x1=0.0,
-            y1=float(y),
-            x2=float(board.board_width),
-            y2=float(y),
-            length=float(board.board_width),
-            label=f"Cross at y={y:.1f}",
+            id=cid, sequence=cid,
+            orientation="horizontal", direction="horizontal",
+            x1=0.0, y1=float(y), x2=float(board.board_width), y2=float(y),
+            length=float(board.board_width), label=f"Cross at y={y:.1f}",
         ))
         cid += 1
+
     return cuts
 
 
@@ -627,14 +545,12 @@ def _build_edging(request):
         tem = p.total_edge_length_mm / 1000.0
         total_m += tem
         ea = "".join(
-            s[0].upper()
-            for s, f in [
+            s[0].upper() for s, f in [
                 ("top", p.edging.top),
                 ("right", p.edging.right),
                 ("bottom", p.edging.bottom),
                 ("left", p.edging.left),
-            ]
-            if f
+            ] if f
         ) or "None"
         details.append(EdgingDetail(
             panel_label=p.label or "Panel",
@@ -646,10 +562,7 @@ def _build_edging(request):
     return EdgingSummary(total_meters=total_m, details=details)
 
 
-def _build_summary(
-    request, boards, total_used, imp_labels, warnings,
-    kerf_mm, bw, bl, total_panels, total_edging_m,
-):
+def _build_summary(request, boards, total_used, imp_labels, warnings, kerf_mm, bw, bl, total_panels, total_edging_m):
     from .schemas import OptimizationSummary, GrainAlignment
 
     ba = bw * bl
@@ -678,7 +591,7 @@ def _build_summary(
     )
 
 
-def _generate_stickers(request, boards) -> list:
+def _generate_stickers(request, boards):
     from .schemas import StickerLabel
 
     stickers = []
@@ -704,18 +617,14 @@ def _generate_stickers(request, boards) -> list:
                 thickness_mm=request.board.thickness_mm,
                 company=request.board.company,
                 color_name=request.board.color_name,
-                notes=None,
+                notes=panel.notes,
                 qr_url=f"{PUBLIC_BASE_URL}/api/tracking/{serial}",
             ))
 
     return stickers
 
 
-def _work_to_layouts(
-    request, boards_work: List[BoardState],
-    impossible_units: List[PanelUnit],
-    warnings: Optional[List[str]] = None,
-) -> Tuple:
+def _work_to_layouts(request, boards_work, impossible_units, warnings=None):
     from .schemas import BoardLayout
 
     bw, bl = _resolve_board_size(request)
@@ -730,10 +639,12 @@ def _work_to_layouts(
     ba = float(bw * bl)
 
     material_info = {
+        "board_item_id": request.board.board_item_id,
         "board_type": request.board.board_type,
         "thickness_mm": request.board.thickness_mm,
         "company": request.board.company,
         "color_name": request.board.color_name,
+        "price_per_board": request.board.price_per_board,
     }
 
     for b in boards_work:
@@ -763,14 +674,10 @@ def _work_to_layouts(
     edging = _build_edging(request)
 
     summary = _build_summary(
-        request,
-        boards,
-        total_used,
+        request, boards, total_used,
         [u.label for u in impossible_units],
         warnings,
-        float(kerf),
-        float(bw),
-        float(bl),
+        float(kerf), float(bw), float(bl),
         sum(int(p.quantity) for p in request.panels),
         edging.total_meters,
     )
@@ -780,7 +687,7 @@ def _work_to_layouts(
     return boards, summary, edging, stickers
 
 
-def run_optimization(request) -> Tuple:
+def run_optimization(request):
     _ensure_request_options(request)
     bw, bl = _resolve_board_size(request)
     kerf = _get_kerf_mm(request)
@@ -810,6 +717,5 @@ def run_optimization(request) -> Tuple:
     )
 
     boards, imp, warnings = _run_all_strategies(request, feasible, bw, bl, kerf)
-
     all_imp = impossible_pre + imp
     return _work_to_layouts(request, boards, all_imp, warnings)
