@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ─────────────────── Enums ───────────────────
@@ -46,15 +46,22 @@ class Panel(BaseModel):
     alignment: GrainAlignment = GrainAlignment.none
     edging: Edging = Field(default_factory=Edging)
 
-    # Optional per-panel board override fields
+    # ── per-panel board overrides ──
     board_type: Optional[str] = None
     thickness_mm: Optional[float] = None
     company: Optional[str] = None
     color_name: Optional[str] = None
 
+    # FIX 1 ─ guard against quantity < 1
+    @model_validator(mode="after")
+    def _clamp_quantity(self):
+        if self.quantity < 1:
+            self.quantity = 1
+        return self
+
     @property
     def edge_length_mm(self) -> float:
-        """Total edging length for ONE unit of this panel (mm)."""
+        """Edging length for ONE unit (mm)."""
         total = 0.0
         if self.edging.top:
             total += self.width
@@ -68,31 +75,33 @@ class Panel(BaseModel):
 
     @property
     def total_edge_length_mm(self) -> float:
-        """Total edging length for ALL units of this panel (mm)."""
+        """Edging length for ALL units (mm)."""
         return self.edge_length_mm * self.quantity
 
     def get_effective_board(self, default_board: BoardSpec) -> BoardSpec:
-        """Return per-panel board override or fall back to the request-level board."""
+        """Per-panel board override or fall-back to request-level board."""
+        # FIX 2 ─ only treat thickness as override when explicitly > 0
         has_override = any([
-            self.board_type,
-            self.thickness_mm is not None,
-            self.company,
-            self.color_name,
+            self.board_type not in (None, ""),
+            self.thickness_mm is not None and self.thickness_mm > 0,
+            self.company not in (None, ""),
+            self.color_name not in (None, ""),
         ])
-        if has_override:
-            return BoardSpec(
-                board_type=self.board_type or default_board.board_type,
-                thickness_mm=(
-                    self.thickness_mm
-                    if self.thickness_mm is not None
-                    else default_board.thickness_mm
-                ),
-                company=self.company or default_board.company,
-                color_name=self.color_name or default_board.color_name,
-                width_mm=default_board.width_mm,
-                length_mm=default_board.length_mm,
-            )
-        return default_board
+        if not has_override:
+            return default_board
+
+        return BoardSpec(
+            board_type=self.board_type or default_board.board_type,
+            thickness_mm=(
+                self.thickness_mm
+                if self.thickness_mm is not None and self.thickness_mm > 0
+                else default_board.thickness_mm
+            ),
+            company=self.company or default_board.company,
+            color_name=self.color_name or default_board.color_name,
+            width_mm=default_board.width_mm,
+            length_mm=default_board.length_mm,
+        )
 
 
 # ─────────────────── Request ───────────────────
@@ -102,6 +111,13 @@ class CuttingRequest(BaseModel):
     board: BoardSpec = Field(default_factory=BoardSpec)
     panels: List[Panel] = Field(default_factory=list)
     options: Optional[Options] = Field(default_factory=Options)
+
+    # FIX 3 ─ coerce `options: null` in JSON → Options()
+    @model_validator(mode="after")
+    def _ensure_options(self):
+        if self.options is None:
+            self.options = Options()
+        return self
 
 
 # ─────────────────── Placed Panel ───────────────────
@@ -261,12 +277,15 @@ class HealthResponse(BaseModel):
 
 
 # ─────────────────── Full API Response ───────────────────
+# FIX 4 ─ added optional top-level `pricing` so the frontend
+#          can read it directly without digging into boq.pricing
 class CuttingResponse(BaseModel):
     request_summary: Dict[str, Any] = Field(default_factory=dict)
     optimization: OptimizationSummary = Field(default_factory=OptimizationSummary)
     layouts: List[BoardLayout] = Field(default_factory=list)
     edging: EdgingSummary = Field(default_factory=EdgingSummary)
     boq: Optional[BOQSummary] = None
+    pricing: Optional[PricingSummary] = None       # ← NEW
     stickers: List[StickerLabel] = Field(default_factory=list)
     stock_impact: Any = None
     report_id: str = ""
