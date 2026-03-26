@@ -23,7 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger("panelpro")
 
 # Force flush stdout
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
 
 logger.info("=" * 50)
 logger.info("Starting PanelPro - Cutting Optimizer")
@@ -52,6 +53,7 @@ def _init_db():
         logger.info("Initializing database connection...")
         from app.db import engine
         from app.models import Base
+
         Base.metadata.create_all(bind=engine)
         logger.info("Database initialized successfully!")
     except Exception as e:
@@ -59,7 +61,6 @@ def _init_db():
         logger.warning("App will continue but database features may not work")
 
 
-# Initialize database
 _init_db()
 
 
@@ -83,6 +84,7 @@ def parse_allowed_origins() -> list[str]:
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://impala-panel-optimzier.onrender.com",
+        "https://impala-panel-optimzier-v1.onrender.com",
     ]
 
 
@@ -103,6 +105,7 @@ def _include_routers():
     try:
         from app.stock_routes import router as board_router
         from app.job_routes import router as job_router
+
         app.include_router(board_router, prefix="/api")
         app.include_router(job_router, prefix="/api")
         logger.info("Routers included successfully")
@@ -117,6 +120,7 @@ _include_routers()
 # --- Database dependency ---
 def get_db():
     from app.db import SessionLocal
+
     db = SessionLocal()
     try:
         yield db
@@ -157,13 +161,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     logger.exception(f"Unhandled server error on {request.method} {request.url.path}")
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
 # --- Root and Health endpoints ---
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    """Root endpoint - confirms API is running"""
     return {
         "status": "ok",
         "message": "PanelPro Cutting Optimizer API",
@@ -174,9 +177,9 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
     try:
         from app.schemas import HealthResponse
+
         return HealthResponse()
     except Exception:
         return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
@@ -184,7 +187,6 @@ async def health():
 
 @app.get("/api/health")
 async def api_health():
-    """API health check"""
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 
@@ -192,6 +194,7 @@ async def api_health():
 @app.get("/api/boards/catalog")
 async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
     from app.models import BoardItem
+
     items = db.query(BoardItem).all()
     return {
         "items": [
@@ -287,12 +290,14 @@ def build_boq(request, optimization, edging, pricing):
 # --- Sticker tracking seed ---
 def seed_sticker_tracking(db: Session, report_id: str, stickers):
     from app.models import StickerTracking
+
     for s in stickers:
         existing = db.query(StickerTracking).filter(
             StickerTracking.serial_number == s.serial_number
         ).first()
         if existing:
             continue
+
         db.add(
             StickerTracking(
                 serial_number=s.serial_number,
@@ -320,49 +325,91 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
 
     try:
         cutting_req = CuttingRequest(**req)
+        logger.info("CuttingRequest parsed successfully")
     except Exception as e:
-        logger.error(f"Invalid request: {e}")
+        logger.exception("Invalid request payload")
         raise HTTPException(status_code=422, detail=f"Invalid request: {str(e)}")
 
     try:
         boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+        logger.info(
+            f"Optimization complete: boards={len(boards)}, stickers={len(stickers)}, total_boards={optimization.total_boards}"
+        )
     except Exception as e:
         logger.exception("Optimization failed")
         raise HTTPException(status_code=400, detail=f"Optimization failed: {str(e)}")
 
-    pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
-    boq = build_boq(cutting_req, optimization, edging_summary, pricing)
+    try:
+        pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
+        logger.info("Pricing calculated successfully")
+    except Exception as e:
+        logger.exception("Pricing calculation failed")
+        raise HTTPException(status_code=500, detail=f"Pricing calculation failed: {str(e)}")
+
+    try:
+        boq = build_boq(cutting_req, optimization, edging_summary, pricing)
+        logger.info("BOQ built successfully")
+    except Exception as e:
+        logger.exception("BOQ build failed")
+        raise HTTPException(status_code=500, detail=f"BOQ build failed: {str(e)}")
 
     report_id = f"RPT-{uuid4().hex[:10].upper()}"
     request_json = cutting_req.model_dump()
 
-    board_requirements = aggregate_board_requirements_from_layouts(boards)
-    stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
+    try:
+        board_requirements = aggregate_board_requirements_from_layouts(boards)
+        logger.info(f"Board requirements: {board_requirements}")
+    except Exception as e:
+        logger.exception("Failed to aggregate board requirements")
+        raise HTTPException(status_code=500, detail=f"Board aggregation failed: {str(e)}")
 
-    save_job_report(
-        db=db,
-        report_id=report_id,
-        request_json=request_json,
-        stock_impact=stock_impact,
-    )
+    try:
+        stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
+        logger.info(f"Stock impact rows: {len(stock_impact)}")
+    except Exception as e:
+        logger.exception("Failed to compute stock impact")
+        raise HTTPException(status_code=500, detail=f"Stock impact failed: {str(e)}")
 
-    seed_sticker_tracking(db, report_id, stickers)
+    try:
+        save_job_report(
+            db=db,
+            report_id=report_id,
+            request_json=request_json,
+            stock_impact=stock_impact,
+        )
+        logger.info(f"Job report saved: {report_id}")
+    except Exception as e:
+        logger.exception("Failed to save job report")
+        raise HTTPException(status_code=500, detail=f"Saving job report failed: {str(e)}")
 
-    return CuttingResponse(
-        request_summary={
-            "project_name": cutting_req.project_name,
-            "customer_name": cutting_req.customer_name,
-            "total_panels": optimization.total_panels,
-        },
-        optimization=optimization,
-        layouts=boards,
-        edging=edging_summary,
-        boq=boq,
-        stickers=stickers,
-        stock_impact=stock_impact,
-        report_id=report_id,
-        generated_at=datetime.utcnow(),
-    )
+    try:
+        seed_sticker_tracking(db, report_id, stickers)
+        logger.info(f"Sticker tracking seeded: {len(stickers)} stickers")
+    except Exception as e:
+        logger.exception("Failed to seed sticker tracking")
+        raise HTTPException(status_code=500, detail=f"Sticker tracking failed: {str(e)}")
+
+    try:
+        response = CuttingResponse(
+            request_summary={
+                "project_name": cutting_req.project_name,
+                "customer_name": cutting_req.customer_name,
+                "total_panels": optimization.total_panels,
+            },
+            optimization=optimization,
+            layouts=boards,
+            edging=edging_summary,
+            boq=boq,
+            stickers=stickers,
+            stock_impact=stock_impact,
+            report_id=report_id,
+            generated_at=datetime.utcnow(),
+        )
+        logger.info(f"Returning optimization response for report_id={report_id}")
+        return response
+    except Exception as e:
+        logger.exception("Failed to build CuttingResponse")
+        raise HTTPException(status_code=500, detail=f"Response build failed: {str(e)}")
 
 
 # --- PDF Report endpoint ---
@@ -377,33 +424,37 @@ async def export_report_pdf(req: dict, db: Session = Depends(get_db)):
         compute_stock_impact_from_selected_boards,
     )
 
-    cutting_req = CuttingRequest(**req)
-    boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
-    pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
-    boq = build_boq(cutting_req, optimization, edging_summary, pricing)
+    try:
+        cutting_req = CuttingRequest(**req)
+        boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+        pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
+        boq = build_boq(cutting_req, optimization, edging_summary, pricing)
 
-    board_requirements = aggregate_board_requirements_from_layouts(boards)
-    stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
+        board_requirements = aggregate_board_requirements_from_layouts(boards)
+        stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
 
-    report_id = f"RPT-{uuid4().hex[:10].upper()}"
+        report_id = f"RPT-{uuid4().hex[:10].upper()}"
 
-    pdf_bytes = generate_report_pdf(
-        request=cutting_req,
-        layouts=boards,
-        optimization=optimization,
-        edging=edging_summary,
-        boq=boq,
-        stickers=stickers,
-        stock_impact=stock_impact,
-        report_id=report_id,
-    )
+        pdf_bytes = generate_report_pdf(
+            request=cutting_req,
+            layouts=boards,
+            optimization=optimization,
+            edging=edging_summary,
+            boq=boq,
+            stickers=stickers,
+            stock_impact=stock_impact,
+            report_id=report_id,
+        )
 
-    filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.exception("PDF report generation failed")
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
 
 
 # --- Labels PDF endpoint ---
@@ -413,20 +464,24 @@ async def export_labels_pdf(req: dict, db: Session = Depends(get_db)):
     from app.optimizer import run_optimization
     from app.pdf_generator import generate_labels_pdf
 
-    cutting_req = CuttingRequest(**req)
-    boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+    try:
+        cutting_req = CuttingRequest(**req)
+        boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
 
-    report_id = f"RPT-{uuid4().hex[:10].upper()}"
-    seed_sticker_tracking(db, report_id, stickers)
+        report_id = f"RPT-{uuid4().hex[:10].upper()}"
+        seed_sticker_tracking(db, report_id, stickers)
 
-    pdf_bytes = generate_labels_pdf(stickers)
+        pdf_bytes = generate_labels_pdf(stickers)
 
-    filename = f"labels_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
-    )
+        filename = f"labels_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.exception("Labels PDF generation failed")
+        raise HTTPException(status_code=500, detail=f"Labels PDF generation failed: {str(e)}")
 
 
 # --- Tracking endpoints ---
@@ -522,6 +577,7 @@ async def shutdown_event():
 # --- For local development ---
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
