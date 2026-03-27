@@ -9,7 +9,7 @@ from app.schemas import (
     EdgingSummary,
     OptimizationSummary,
     StockImpactItem,
-    StickerItem,
+    StickerLabel,
 )
 
 logger = logging.getLogger("panelpro.pdf")
@@ -21,7 +21,7 @@ try:
 
     _HAS_REPORTLAB = True
 except ImportError:
-    logger.info("reportlab not installed – PDF output will be minimal plain-text")
+    logger.info("reportlab not installed - PDF output will be minimal plain-text")
 
 
 # ------------------------------------------------------------------ #
@@ -34,26 +34,28 @@ def generate_report_pdf(
     optimization: OptimizationSummary,
     edging: EdgingSummary,
     boq: BOQSummary,
-    stickers: List[StickerItem],
+    stickers: List[StickerLabel],
     stock_impact: List[StockImpactItem],
     report_id: str,
 ) -> bytes:
     if _HAS_REPORTLAB:
         return _report_reportlab(
-            request, layouts, optimization, edging, boq, stickers, stock_impact, report_id
+            request, layouts, optimization, edging, boq,
+            stickers, stock_impact, report_id,
         )
     return _report_fallback(request, optimization, edging, report_id)
 
 
 def _report_reportlab(
-    request, layouts, optimization, edging, boq, stickers, stock_impact, report_id
+    request, layouts, optimization, edging, boq,
+    stickers, stock_impact, report_id,
 ) -> bytes:
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
     w, h = A4
     y = h - 50
 
-    def _check_page(needed: float = 60):
+    def _check(needed=60):
         nonlocal y
         if y < needed:
             c.showPage()
@@ -69,32 +71,51 @@ def _report_reportlab(
         f"Project:   {request.project_name}",
         f"Customer:  {request.customer_name}",
         "",
-        f"Boards used:   {optimization.total_boards}",
-        f"Panels cut:    {optimization.total_panels}",
-        f"Overall waste:  {optimization.overall_waste_percent}%",
-        f"Total edging:   {edging.total_meters} m",
+        f"Boards used:      {optimization.total_boards}",
+        f"Panels cut:       {optimization.total_panels}",
+        f"Efficiency:       {optimization.overall_efficiency_percent:.1f}%",
+        f"Total waste:      {optimization.total_waste_percent:.1f}%",
+        f"Total edging:     {edging.total_meters:.2f} m",
     ]:
         c.drawString(50, y, line)
         y -= 16
 
     y -= 10
     for layout in layouts:
-        _check_page(80)
+        _check(100)
+        mat = layout.material or {}
+        btype = mat.get("board_type", "")
+        color = mat.get("color_name", "")
+
         c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, f"Board {layout.board_number}  ({layout.board_width}×{layout.board_length} mm)")
+        c.drawString(
+            50, y,
+            f"Board {layout.board_number}  "
+            f"({layout.board_width:.0f} x {layout.board_length:.0f} mm)  "
+            f"{btype} {color}",
+        )
         y -= 16
         c.setFont("Helvetica", 10)
-        c.drawString(70, y, f"Panels: {len(layout.panels)}   Waste: {layout.waste_percent}%")
+        c.drawString(
+            70, y,
+            f"Panels: {layout.panel_count}   "
+            f"Efficiency: {layout.efficiency_percent:.1f}%   "
+            f"Waste: {layout.waste_area_mm2:.0f} mm2",
+        )
         y -= 14
         for p in layout.panels:
-            _check_page()
+            _check()
             rot = " [rotated]" if p.rotated else ""
-            c.drawString(90, y, f"• {p.label}: {p.width}×{p.length} mm  @({p.x},{p.y}){rot}")
+            c.drawString(
+                90, y,
+                f"- {p.label}: {p.width:.0f} x {p.length:.0f} mm  "
+                f"@ ({p.x:.0f},{p.y:.0f}){rot}",
+            )
             y -= 13
         y -= 6
 
     if boq and boq.pricing:
-        _check_page(120)
+        _check(120)
         y -= 6
         c.setFont("Helvetica-Bold", 13)
         c.drawString(50, y, "Pricing")
@@ -117,18 +138,16 @@ def _report_reportlab(
 
 
 def _report_fallback(request, optimization, edging, report_id) -> bytes:
-    lines = "\n".join(
-        [
-            "PanelPro Cutting Report",
-            f"Report: {report_id}",
-            f"Project: {request.project_name}",
-            f"Customer: {request.customer_name}",
-            f"Boards: {optimization.total_boards}",
-            f"Panels: {optimization.total_panels}",
-            f"Waste: {optimization.overall_waste_percent}%",
-            f"Edging: {edging.total_meters} m",
-        ]
-    )
+    lines = "\n".join([
+        "PanelPro Cutting Report",
+        f"Report: {report_id}",
+        f"Project: {request.project_name}",
+        f"Customer: {request.customer_name}",
+        f"Boards: {optimization.total_boards}",
+        f"Panels: {optimization.total_panels}",
+        f"Efficiency: {optimization.overall_efficiency_percent:.1f}%",
+        f"Edging: {edging.total_meters:.2f} m",
+    ])
     return _text_to_minimal_pdf(lines)
 
 
@@ -136,7 +155,7 @@ def _report_fallback(request, optimization, edging, report_id) -> bytes:
 #  Labels PDF                                                         #
 # ------------------------------------------------------------------ #
 
-def generate_labels_pdf(stickers: List[StickerItem]) -> bytes:
+def generate_labels_pdf(stickers: List[StickerLabel]) -> bytes:
     if _HAS_REPORTLAB:
         return _labels_reportlab(stickers)
     return _labels_fallback(stickers)
@@ -147,7 +166,7 @@ def _labels_reportlab(stickers) -> bytes:
     c = rl_canvas.Canvas(buf, pagesize=A4)
     w, h = A4
 
-    label_w, label_h = 250, 80
+    label_w, label_h = 250, 90
     margin_x, margin_y = 50, 50
     col_gap, row_gap = 20, 15
     cols = 2
@@ -167,10 +186,17 @@ def _labels_reportlab(stickers) -> bytes:
         c.drawString(x + 8, y + label_h - 14, f"SN: {sticker.serial_number}")
         c.setFont("Helvetica", 8)
         c.drawString(x + 8, y + label_h - 27, f"Panel: {sticker.panel_label}")
-        c.drawString(x + 8, y + label_h - 39, f"Size: {sticker.width}×{sticker.length} mm")
+        c.drawString(
+            x + 8, y + label_h - 39,
+            f"Size: {sticker.width:.0f} x {sticker.length:.0f} mm",
+        )
         c.drawString(x + 8, y + label_h - 51, f"Board: #{sticker.board_number}")
-        if sticker.edges:
-            c.drawString(x + 8, y + label_h - 63, f"Edges: {sticker.edges}")
+        c.drawString(
+            x + 8, y + label_h - 63,
+            f"Material: {sticker.board_type} {sticker.color_name}",
+        )
+        if sticker.notes:
+            c.drawString(x + 8, y + label_h - 75, f"Notes: {sticker.notes}")
 
         col += 1
         if col >= cols:
@@ -187,7 +213,8 @@ def _labels_fallback(stickers) -> bytes:
     for s in stickers:
         lines.append(
             f"SN:{s.serial_number}  {s.panel_label}  "
-            f"{s.width}×{s.length}mm  Board#{s.board_number}  Edges:{s.edges}"
+            f"{s.width:.0f}x{s.length:.0f}mm  Board#{s.board_number}  "
+            f"{s.board_type} {s.color_name}"
         )
     return _text_to_minimal_pdf("\n".join(lines))
 
@@ -197,11 +224,14 @@ def _labels_fallback(stickers) -> bytes:
 # ------------------------------------------------------------------ #
 
 def _text_to_minimal_pdf(text: str) -> bytes:
-    """Produce the smallest valid PDF containing *text*."""
     text_lines = text.split("\n")
     stream_parts = ["BT", "/F1 11 Tf", "50 750 Td"]
     for line in text_lines:
-        safe = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        safe = (
+            line.replace("\\", "\\\\")
+            .replace("(", "\\(")
+            .replace(")", "\\)")
+        )
         stream_parts.append(f"({safe}) Tj")
         stream_parts.append("0 -16 Td")
     stream_parts.append("ET")
