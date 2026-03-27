@@ -1,34 +1,37 @@
-from __future__ import annotations
+"""
+Pydantic schemas — every model referenced by optimizer.py, main.py,
+job_service.py, pricing.py, and pdf_generator.py lives here.
 
-import enum
+DO NOT add `from __future__ import annotations` — FastAPI needs
+concrete types at import-time for dependency injection.
+"""
+
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
-class GrainAlignment(str, enum.Enum):
+# ------------------------------------------------------------------ #
+#  Enums                                                              #
+# ------------------------------------------------------------------ #
+
+class GrainAlignment(str, Enum):
     none = "none"
     horizontal = "horizontal"
     vertical = "vertical"
 
 
-class Edging(BaseModel):
+# ------------------------------------------------------------------ #
+#  Edge / Options                                                     #
+# ------------------------------------------------------------------ #
+
+class EdgeSpec(BaseModel):
     top: bool = False
     right: bool = False
     bottom: bool = False
     left: bool = False
-
-
-class BoardSpec(BaseModel):
-    board_item_id: Optional[int] = None
-    board_type: str = "MDF"
-    thickness_mm: float = 18.0
-    company: str = ""
-    color_name: str = ""
-    width_mm: float = 2440.0
-    length_mm: float = 1220.0
-    price_per_board: float = 0.0
 
 
 class Options(BaseModel):
@@ -38,30 +41,33 @@ class Options(BaseModel):
     generate_cuts: bool = True
 
 
-class Panel(BaseModel):
+# ------------------------------------------------------------------ #
+#  Board & Panel specs                                                #
+# ------------------------------------------------------------------ #
+
+class BoardSpec(BaseModel):
+    board_item_id: Optional[int] = None
+    board_type: str = "MDF"
+    thickness_mm: float = 18.0
+    color_name: str = "White"
+    company: str = "Generic"
+    width_mm: float = 2440.0
+    length_mm: float = 1220.0
+    price_per_board: float = 0.0
+
+
+class PanelSpec(BaseModel):
     width: float
     length: float
     quantity: int = 1
-    label: Optional[str] = None
+    label: str = ""
+    edging: EdgeSpec = Field(default_factory=EdgeSpec)
     alignment: GrainAlignment = GrainAlignment.none
-    edging: Edging = Field(default_factory=Edging)
-
-    board_item_id: Optional[int] = None
-    board_type: Optional[str] = None
-    thickness_mm: Optional[float] = None
-    company: Optional[str] = None
-    color_name: Optional[str] = None
-    price_per_board: Optional[float] = None
     notes: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _clamp_quantity(self):
-        if self.quantity < 1:
-            self.quantity = 1
-        return self
 
     @property
     def edge_length_mm(self) -> float:
+        """Total edging millimetres for ONE piece."""
         total = 0.0
         if self.edging.top:
             total += self.width
@@ -75,60 +81,32 @@ class Panel(BaseModel):
 
     @property
     def total_edge_length_mm(self) -> float:
+        """Total edging mm across all pieces (quantity)."""
         return self.edge_length_mm * self.quantity
 
-    def get_effective_board(self, default_board: BoardSpec) -> BoardSpec:
-        has_override = any([
-            self.board_item_id is not None,
-            self.board_type not in (None, ""),
-            self.thickness_mm is not None and self.thickness_mm > 0,
-            self.company not in (None, ""),
-            self.color_name not in (None, ""),
-            self.price_per_board is not None,
-        ])
-        if not has_override:
-            return default_board
 
-        return BoardSpec(
-            board_item_id=self.board_item_id if self.board_item_id is not None else default_board.board_item_id,
-            board_type=self.board_type or default_board.board_type,
-            thickness_mm=(
-                self.thickness_mm
-                if self.thickness_mm is not None and self.thickness_mm > 0
-                else default_board.thickness_mm
-            ),
-            company=self.company or default_board.company,
-            color_name=self.color_name or default_board.color_name,
-            width_mm=default_board.width_mm,
-            length_mm=default_board.length_mm,
-            price_per_board=(
-                self.price_per_board
-                if self.price_per_board is not None
-                else default_board.price_per_board
-            ),
-        )
-
+# ------------------------------------------------------------------ #
+#  Request                                                            #
+# ------------------------------------------------------------------ #
 
 class CuttingRequest(BaseModel):
     project_name: str = "Untitled Project"
     customer_name: str = "Customer"
     board: BoardSpec = Field(default_factory=BoardSpec)
-    panels: List[Panel] = Field(default_factory=list)
-    options: Optional[Options] = Field(default_factory=Options)
+    panels: List[PanelSpec] = Field(default_factory=list)
+    options: Optional[Options] = None
 
-    @model_validator(mode="after")
-    def _ensure_options(self):
-        if self.options is None:
-            self.options = Options()
-        return self
 
+# ------------------------------------------------------------------ #
+#  Placed panel / cuts                                                #
+# ------------------------------------------------------------------ #
 
 class PlacedPanel(BaseModel):
-    panel_index: int
-    x: float
-    y: float
-    width: float
-    length: float
+    panel_index: int = 0
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 0.0
+    length: float = 0.0
     footprint_width: float = 0.0
     footprint_length: float = 0.0
     original_width: float = 0.0
@@ -137,26 +115,32 @@ class PlacedPanel(BaseModel):
     notes: Optional[str] = None
     rotated: bool = False
     grain_aligned: GrainAlignment = GrainAlignment.none
-    board_number: int = 1
+    board_number: int = 0
 
 
 class CutSegment(BaseModel):
-    id: int
-    orientation: str
-    direction: str
-    x1: float
-    y1: float
-    x2: float
-    y2: float
-    length: float
+    id: int = 0
+    sequence: int = 0
+    orientation: str = ""
+    direction: str = ""
+    x1: float = 0.0
+    y1: float = 0.0
+    x2: float = 0.0
+    y2: float = 0.0
+    length: float = 0.0
     label: str = ""
-    sequence: Optional[int] = None
 
+
+# ------------------------------------------------------------------ #
+#  Board layout  (produced by optimizer)                              #
+#  NOTE: board-material info is in the `material` dict, NOT as       #
+#  top-level attributes like board_type / thickness_mm.               #
+# ------------------------------------------------------------------ #
 
 class BoardLayout(BaseModel):
-    board_number: int
-    board_width: float
-    board_length: float
+    board_number: int = 0
+    board_width: float = 0.0
+    board_length: float = 0.0
     used_area_mm2: float = 0.0
     waste_area_mm2: float = 0.0
     efficiency_percent: float = 0.0
@@ -166,6 +150,27 @@ class BoardLayout(BaseModel):
     panels: List[PlacedPanel] = Field(default_factory=list)
     cuts: List[CutSegment] = Field(default_factory=list)
 
+
+# ------------------------------------------------------------------ #
+#  Edging                                                             #
+# ------------------------------------------------------------------ #
+
+class EdgingDetail(BaseModel):
+    panel_label: str = ""
+    quantity: int = 0
+    edge_per_panel_m: float = 0.0
+    total_edge_m: float = 0.0
+    edges_applied: str = "None"
+
+
+class EdgingSummary(BaseModel):
+    total_meters: float = 0.0
+    details: List[EdgingDetail] = Field(default_factory=list)
+
+
+# ------------------------------------------------------------------ #
+#  Optimization summary                                               #
+# ------------------------------------------------------------------ #
 
 class OptimizationSummary(BaseModel):
     total_boards: int = 0
@@ -187,27 +192,18 @@ class OptimizationSummary(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
-class EdgingDetail(BaseModel):
-    panel_label: str
-    quantity: int
-    edge_per_panel_m: float
-    total_edge_m: float
-    edges_applied: str
-
-
-class EdgingSummary(BaseModel):
-    total_meters: float = 0.0
-    details: List[EdgingDetail] = Field(default_factory=list)
-
+# ------------------------------------------------------------------ #
+#  Sticker labels (produced by optimizer)                             #
+# ------------------------------------------------------------------ #
 
 class StickerLabel(BaseModel):
-    serial_number: str
-    panel_label: str
-    width: float
-    length: float
-    board_number: int
-    x: float
-    y: float
+    serial_number: str = ""
+    panel_label: str = ""
+    width: float = 0.0
+    length: float = 0.0
+    board_number: int = 0
+    x: float = 0.0
+    y: float = 0.0
     rotated: bool = False
     project_name: str = ""
     customer_name: str = ""
@@ -219,11 +215,14 @@ class StickerLabel(BaseModel):
     qr_url: str = ""
 
 
+# ------------------------------------------------------------------ #
+#  Pricing                                                            #
+# ------------------------------------------------------------------ #
+
 class PricingLine(BaseModel):
-    item: str
+    item: str = ""
     description: str = ""
     quantity: float = 0.0
-    unit: str = ""
     unit_price: float = 0.0
     amount: float = 0.0
 
@@ -231,18 +230,19 @@ class PricingLine(BaseModel):
 class PricingSummary(BaseModel):
     lines: List[PricingLine] = Field(default_factory=list)
     subtotal: float = 0.0
-    tax_name: str = ""
-    tax_rate: float = 0.0
-    tax_amount: float = 0.0
+    tax: float = 0.0
     total: float = 0.0
-    currency: str = ""
 
+
+# ------------------------------------------------------------------ #
+#  BOQ                                                                #
+# ------------------------------------------------------------------ #
 
 class BOQItem(BaseModel):
-    item_no: int
-    description: str
-    size: str
-    quantity: int
+    item_no: int = 0
+    description: str = ""
+    size: str = ""
+    quantity: int = 0
     unit: str = "pcs"
     edges: str = "None"
     board_type: str = ""
@@ -262,42 +262,50 @@ class BOQSummary(BaseModel):
     pricing: Optional[PricingSummary] = None
 
 
+# ------------------------------------------------------------------ #
+#  Stock impact                                                       #
+# ------------------------------------------------------------------ #
+
 class StockImpactItem(BaseModel):
-    board_item_id: int
-    board_label: str = ""
-    current_quantity: int = 0
-    required_quantity: int = 0
-    projected_balance: int = 0
-    price_per_board: float = 0.0
-    stock_status: str = ""
+    board_item_id: int = 0
+    board_type: str = ""
+    thickness_mm: float = 0.0
+    color_name: str = ""
+    company: str = ""
+    width_mm: float = 0.0
+    length_mm: float = 0.0
+    boards_needed: int = 0
+    current_stock: int = 0
+    stock_after: int = 0
+    sufficient: bool = False
 
 
-class RemainingStockItem(BaseModel):
-    board_item_id: int
-    quantity: int = 0
-
-
-class StickerTrackingResponse(BaseModel):
-    serial_number: str
-    report_id: str
-    panel_label: str
-    status: str
-    qr_url: str
-    updated_at: Optional[str] = None
-    board_number: int
-
+# ------------------------------------------------------------------ #
+#  Health                                                             #
+# ------------------------------------------------------------------ #
 
 class HealthResponse(BaseModel):
     status: str = "healthy"
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
 
-class JobConfirmResponse(BaseModel):
-    success: bool = True
-    message: str = ""
-    boards_deducted: int = 0
-    remaining_stock: List[RemainingStockItem] = Field(default_factory=list)
+# ------------------------------------------------------------------ #
+#  Tracking                                                           #
+# ------------------------------------------------------------------ #
 
+class StickerTrackingResponse(BaseModel):
+    serial_number: str = ""
+    report_id: str = ""
+    panel_label: Optional[str] = None
+    status: str = "in_store"
+    qr_url: Optional[str] = None
+    updated_at: Optional[str] = None
+    board_number: Optional[int] = None
+
+
+# ------------------------------------------------------------------ #
+#  Full cutting response                                              #
+# ------------------------------------------------------------------ #
 
 class CuttingResponse(BaseModel):
     request_summary: Dict[str, Any] = Field(default_factory=dict)
@@ -305,8 +313,7 @@ class CuttingResponse(BaseModel):
     layouts: List[BoardLayout] = Field(default_factory=list)
     edging: EdgingSummary = Field(default_factory=EdgingSummary)
     boq: Optional[BOQSummary] = None
-    pricing: Optional[PricingSummary] = None
     stickers: List[StickerLabel] = Field(default_factory=list)
-    stock_impact: Optional[List[StockImpactItem]] = None
+    stock_impact: List[StockImpactItem] = Field(default_factory=list)
     report_id: str = ""
     generated_at: Optional[datetime] = None
