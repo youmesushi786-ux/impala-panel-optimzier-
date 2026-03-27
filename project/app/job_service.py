@@ -13,20 +13,35 @@ logger = logging.getLogger("panelpro.job_service")
 def aggregate_board_requirements_from_layouts(
     layouts: List[BoardLayout],
 ) -> List[Dict[str, Any]]:
+    """
+    Group layouts by their material info and count how many boards
+    of each type are needed.
+
+    Board-type metadata lives in ``layout.material`` (a dict), NOT
+    as top-level attributes on BoardLayout.
+    """
     groups: Dict[str, Dict[str, Any]] = {}
 
     for layout in layouts:
+        mat = layout.material or {}
+        board_type = mat.get("board_type", "")
+        thickness = mat.get("thickness_mm", 0)
+        color = mat.get("color_name", "")
+        company = mat.get("company", "")
+        bid = mat.get("board_item_id")
+
         key = (
-            f"{layout.board_type}|{layout.thickness_mm}|"
-            f"{layout.color_name}|{layout.company}|"
+            f"{board_type}|{thickness}|{color}|{company}|"
             f"{layout.board_width}|{layout.board_length}"
         )
+
         if key not in groups:
             groups[key] = {
-                "board_type": layout.board_type,
-                "thickness_mm": layout.thickness_mm,
-                "color_name": layout.color_name,
-                "company": layout.company,
+                "board_item_id": bid,
+                "board_type": board_type,
+                "thickness_mm": thickness,
+                "color_name": color,
+                "company": company,
                 "width_mm": layout.board_width,
                 "length_mm": layout.board_length,
                 "count": 0,
@@ -43,19 +58,31 @@ def compute_stock_impact_from_selected_boards(
     impact: List[StockImpactItem] = []
 
     for req in board_requirements:
-        board_item = (
-            db.query(BoardItem)
-            .filter(
-                BoardItem.board_type == req["board_type"],
-                BoardItem.thickness_mm == req["thickness_mm"],
-                BoardItem.color_name == req["color_name"],
-                BoardItem.company == req["company"],
-                BoardItem.width_mm == req["width_mm"],
-                BoardItem.length_mm == req["length_mm"],
-                BoardItem.is_active.is_(True),
+        # Try to find by board_item_id first if available
+        board_item = None
+        bid = req.get("board_item_id")
+        if bid:
+            board_item = (
+                db.query(BoardItem)
+                .filter(BoardItem.id == bid, BoardItem.is_active.is_(True))
+                .first()
             )
-            .first()
-        )
+
+        # Fallback: match by attributes
+        if not board_item:
+            board_item = (
+                db.query(BoardItem)
+                .filter(
+                    BoardItem.board_type == req["board_type"],
+                    BoardItem.thickness_mm == req["thickness_mm"],
+                    BoardItem.color_name == req["color_name"],
+                    BoardItem.company == req["company"],
+                    BoardItem.width_mm == req["width_mm"],
+                    BoardItem.length_mm == req["length_mm"],
+                    BoardItem.is_active.is_(True),
+                )
+                .first()
+            )
 
         if board_item:
             after = board_item.quantity - req["count"]
