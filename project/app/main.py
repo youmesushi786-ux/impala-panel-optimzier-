@@ -426,4 +426,344 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
 
     try:
         seed_sticker_tracking(db, report_id, stickers)
-        logger.info("Sticker tracking seeded: %d 
+        logger.info("Sticker tracking seeded: %d stickers", len(stickers))
+    except Exception as exc:
+        logger.exception("Sticker tracking seeding failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # --- build response ---
+    try:
+        response = CuttingResponse(
+            report_id=report_id,
+            boards=boards,
+            summary=optimization,
+            edging=edging_summary,
+            pricing=pricing,
+            boq=boq,
+            stickers=stickers,
+            stock_impact=stock_impact,
+        )
+        logger.info("Response built successfully for report %s", report_id)
+        return response
+    except Exception as exc:
+        logger.exception("Response build failed")
+        raise HTTPException(status_code=500, detail=f"Response build failed: {exc}")
+
+
+# ------------------------------------------------------------------ #
+#  Sticker / Tracking endpoints                                       #
+# ------------------------------------------------------------------ #
+@app.get("/api/tracking/{serial_number}")
+async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
+    from app.models import StickerTracking
+
+    item = (
+        db.query(StickerTracking)
+        .filter(StickerTracking.serial_number == serial_number)
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Sticker not found")
+    return serialize_tracking(item)
+
+
+@app.put("/api/tracking/{serial_number}")
+async def update_tracking(
+    serial_number: str,
+    body: dict,
+    db: Session = Depends(get_db),
+    x_api_key: Optional[str] = Header(None),
+):
+    require_admin_api_key(x_api_key)
+    from app.models import StickerTracking
+
+    item = (
+        db.query(StickerTracking)
+        .filter(StickerTracking.serial_number == serial_number)
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Sticker not found")
+
+    valid_statuses = ["in_store", "dispatched", "delivered", "installed", "returned"]
+    new_status = body.get("status")
+    if new_status and new_status in valid_statuses:
+        item.status = new_status
+        item.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(item)
+        logger.info("Tracking updated: %s -> %s", serial_number, new_status)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {valid_statuses}",
+        )
+
+    return serialize_tracking(item)
+
+
+@app.get("/api/tracking")
+async def list_tracking(
+    report_id: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    from app.models import StickerTracking
+
+    query = db.query(StickerTracking)
+    if report_id:
+        query = query.filter(StickerTracking.report_id == report_id)
+    if status:
+        query = query.filter(StickerTracking.status == status)
+
+    items = query.order_by(StickerTracking.serial_number).all()
+    return {"items": [serialize_tracking(i) for i in items]}
+
+
+# ------------------------------------------------------------------ #
+#  Job reports                                                        #
+# ------------------------------------------------------------------ #
+@app.get("/api/jobs")
+async def list_jobs(db: Session = Depends(get_db)):
+    from app.models import JobReport
+
+    jobs = db.query(JobReport).order_by(JobReport.created_at.desc()).all()
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "report_id": j.report_id,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "request_json": j.request_json,
+            }
+            for j in jobs
+        ]
+    }
+
+
+@app.get("/api/jobs/{report_id}")
+async def get_job(report_id: str, db: Session = Depends(get_db)):
+    from app.models import JobReport
+
+    job = (
+        db.query(JobReport)
+        .filter(JobReport.report_id == report_id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job report not found")
+    return {
+        "id": job.id,
+        "report_id": job.report_id,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "request_json": job.request_json,
+    }
+
+
+@app.delete("/api/jobs/{report_id}")
+async def delete_job(
+    report_id: str,
+    db: Session = Depends(get_db),
+    x_api_key: Optional[str] = Header(None),
+):
+    require_admin_api_key(x_api_key)
+    from app.models import JobReport, StickerTracking
+
+    # Also clean up associated sticker tracking
+    db.query(StickerTracking).filter(
+        StickerTracking.report_id == report_id
+    ).delete()
+
+    job = (
+        db.query(JobReport)
+        .filter(JobReport.report_id == report_id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job report not found")
+
+    db.delete(job)
+    db.commit()
+    logger.info("Deleted job report: %s", report_id)
+    return {"detail": f"Job report {report_id} deleted"}
+
+
+# ------------------------------------------------------------------ #
+#  Stock management                                                   #
+# ------------------------------------------------------------------ #
+@app.post("/api/stock/deduct")
+async def deduct_stock(
+    body: dict,
+    db: Session = Depends(get_db),
+    x_api_key: Optional[str] = Header(None),
+):
+    require_admin_api_key(x_api_key)
+    from app.models import BoardItem
+
+    board_item_id = body.get("board_item_id")
+    quantity = body.get("quantity", 0)
+
+    if not board_item_id or quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="board_item_id and positive quantity required",
+        )
+
+    item = db.query(BoardItem).filter(BoardItem.id == board_item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Board item not found")
+
+    if item.quantity < quantity:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient stock: have {item.quantity}, need {quantity}",
+        )
+
+    item.quantity -= quantity
+    db.commit()
+    db.refresh(item)
+    logger.info(
+        "Stock deducted: item=%s qty=%d remaining=%d",
+        board_item_id, quantity, item.quantity,
+    )
+    return {
+        "detail": f"Deducted {quantity} from {item.color_name}",
+        "remaining": item.quantity,
+    }
+
+
+@app.post("/api/stock/add")
+async def add_stock(
+    body: dict,
+    db: Session = Depends(get_db),
+    x_api_key: Optional[str] = Header(None),
+):
+    require_admin_api_key(x_api_key)
+    from app.models import BoardItem
+
+    board_item_id = body.get("board_item_id")
+    quantity = body.get("quantity", 0)
+
+    if not board_item_id or quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="board_item_id and positive quantity required",
+        )
+
+    item = db.query(BoardItem).filter(BoardItem.id == board_item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Board item not found")
+
+    item.quantity += quantity
+    db.commit()
+    db.refresh(item)
+    logger.info(
+        "Stock added: item=%s qty=%d total=%d",
+        board_item_id, quantity, item.quantity,
+    )
+    return {
+        "detail": f"Added {quantity} to {item.color_name}",
+        "total": item.quantity,
+    }
+
+
+@app.get("/api/stock/low")
+async def low_stock(db: Session = Depends(get_db)):
+    from app.models import BoardItem
+
+    items = (
+        db.query(BoardItem)
+        .filter(BoardItem.quantity <= BoardItem.low_stock_threshold)
+        .filter(BoardItem.is_active == True)
+        .all()
+    )
+    return {
+        "low_stock_items": [
+            {
+                "id": i.id,
+                "board_type": i.board_type,
+                "color_name": i.color_name,
+                "company": i.company,
+                "quantity": i.quantity,
+                "low_stock_threshold": i.low_stock_threshold,
+            }
+            for i in items
+        ]
+    }
+
+
+# ------------------------------------------------------------------ #
+#  Re-optimize from saved job                                         #
+# ------------------------------------------------------------------ #
+@app.post("/api/jobs/{report_id}/reoptimize")
+async def reoptimize_job(report_id: str, db: Session = Depends(get_db)):
+    from app.models import JobReport
+    from app.optimizer import run_optimization
+    from app.pricing import calculate_pricing
+    from app.schemas import CuttingRequest, CuttingResponse
+
+    job = (
+        db.query(JobReport)
+        .filter(JobReport.report_id == report_id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Job report not found")
+
+    try:
+        cutting_req = CuttingRequest(**job.request_json)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not parse saved request: {exc}",
+        )
+
+    try:
+        boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+        pricing = calculate_pricing(
+            cutting_req, optimization, edging_summary.total_meters,
+        )
+        boq = build_boq(cutting_req, optimization, edging_summary, pricing)
+
+        new_report_id = f"RPT-{uuid4().hex[:10].upper()}"
+        seed_sticker_tracking(db, new_report_id, stickers)
+
+        response = CuttingResponse(
+            report_id=new_report_id,
+            boards=boards,
+            summary=optimization,
+            edging=edging_summary,
+            pricing=pricing,
+            boq=boq,
+            stickers=stickers,
+            stock_impact=[],
+        )
+        logger.info("Re-optimization complete: %s -> %s", report_id, new_report_id)
+        return response
+    except Exception as exc:
+        logger.exception("Re-optimization failed")
+        raise HTTPException(status_code=500, detail=f"Re-optimization failed: {exc}")
+
+
+# ------------------------------------------------------------------ #
+#  Startup event                                                      #
+# ------------------------------------------------------------------ #
+@app.on_event("startup")
+async def on_startup():
+    logger.info("PanelPro API is ready on port %s", PORT)
+    logger.info("Docs available at /docs")
+
+
+# ------------------------------------------------------------------ #
+#  Entry point                                                        #
+# ------------------------------------------------------------------ #
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=PORT,
+        reload=False,
+        log_level="info",
+    )
