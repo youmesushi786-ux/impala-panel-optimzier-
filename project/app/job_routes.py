@@ -1,19 +1,15 @@
-from __future__ import annotations
-
-import json
+import logging
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from .db import SessionLocal
-from .job_service import (
-    get_job_report,
-    parse_stock_impact,
-    confirm_job_stock_deduction,
-)
-from .schemas import JobConfirmResponse
+from app.db import SessionLocal
+from app.job_service import confirm_job
+from app.models import JobReport
 
-router = APIRouter(prefix="/jobs", tags=["Jobs"])
+logger = logging.getLogger("panelpro.jobs")
+router = APIRouter(tags=["Job Management"])
 
 
 def get_db():
@@ -24,35 +20,49 @@ def get_db():
         db.close()
 
 
-@router.get("/{report_id}")
-def get_job(report_id: str, db: Session = Depends(get_db)):
-    job = get_job_report(db, report_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job report not found")
-
+@router.get("/jobs")
+async def list_jobs(db: Session = Depends(get_db)):
+    jobs = db.query(JobReport).order_by(JobReport.created_at.desc()).all()
     return {
-        "report_id": job.report_id,
-        "request_json": json.loads(job.request_json),
-        "stock_impact": parse_stock_impact(job),
-        "confirmed": job.confirmed,
-        "confirmed_at": job.confirmed_at,
-        "created_at": job.created_at,
+        "jobs": [
+            {
+                "report_id": j.report_id,
+                "status": j.status,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "confirmed_at": (
+                    j.confirmed_at.isoformat() if j.confirmed_at else None
+                ),
+            }
+            for j in jobs
+        ]
     }
 
 
-@router.post("/confirm/{report_id}", response_model=JobConfirmResponse)
-def confirm_job(report_id: str, db: Session = Depends(get_db)):
-    job = get_job_report(db, report_id)
+@router.get("/jobs/{report_id}")
+async def get_job(report_id: str, db: Session = Depends(get_db)):
+    job = (
+        db.query(JobReport).filter(JobReport.report_id == report_id).first()
+    )
     if not job:
-        raise HTTPException(status_code=404, detail="Job report not found")
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {
+        "report_id": job.report_id,
+        "status": job.status,
+        "request_json": job.request_json,
+        "stock_impact_json": job.stock_impact_json,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "confirmed_at": (
+            job.confirmed_at.isoformat() if job.confirmed_at else None
+        ),
+    }
 
-    try:
-        total_deducted, remaining_stock = confirm_job_stock_deduction(db, job)
-        return JobConfirmResponse(
-            success=True,
-            message=f"Job {report_id} confirmed successfully. Stock deducted.",
-            boards_deducted=total_deducted,
-            remaining_stock=remaining_stock,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+
+@router.post("/jobs/{report_id}/confirm")
+async def confirm_job_endpoint(
+    report_id: str,
+    db: Session = Depends(get_db),
+):
+    success = confirm_job(db, report_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"report_id": report_id, "status": "confirmed"}
