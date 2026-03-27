@@ -1,6 +1,6 @@
-# NOTE: Do NOT use `from __future__ import annotations` here.
-# It converts all annotations to strings and breaks FastAPI's runtime
-# resolution of Depends(), Header(), Query(), etc. on Python < 3.10.
+# !! DO NOT add `from __future__ import annotations` here !!
+# It turns all type annotations into strings, which breaks FastAPI's
+# runtime introspection of Depends(), Header(), Query(), etc.
 
 import logging
 import os
@@ -30,7 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(line_buffering=True)
 
 logger.info("=" * 50)
-logger.info("Starting PanelPro – Cutting Optimizer")
+logger.info("Starting PanelPro - Cutting Optimizer")
 logger.info("=" * 50)
 
 # ------------------------------------------------------------------ #
@@ -47,7 +47,7 @@ logger.info("REQUIRE_ADMIN_API_KEY: %s", REQUIRE_ADMIN_API_KEY)
 #  FastAPI app                                                        #
 # ------------------------------------------------------------------ #
 app = FastAPI(
-    title="PanelPro – Cutting Optimizer",
+    title="PanelPro - Cutting Optimizer",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -59,12 +59,12 @@ app = FastAPI(
 # ------------------------------------------------------------------ #
 def _init_db() -> None:
     try:
-        logger.info("Initializing database …")
+        logger.info("Initializing database ...")
         from app.db import engine
         from app.models import Base
 
         Base.metadata.create_all(bind=engine)
-        logger.info("Database initialized ✓")
+        logger.info("Database initialized successfully!")
     except Exception as exc:
         logger.error("Database init error: %s", exc)
         logger.warning("App will continue but DB features may be unavailable")
@@ -79,7 +79,7 @@ _init_db()
 try:
     if os.path.isdir("static"):
         app.mount("/static", StaticFiles(directory="static"), name="static")
-        logger.info("Static files mounted ✓")
+        logger.info("Static files mounted")
 except Exception as exc:
     logger.warning("Could not mount static files: %s", exc)
 
@@ -122,7 +122,7 @@ def _include_routers() -> None:
 
     app.include_router(board_router, prefix="/api")
     app.include_router(job_router, prefix="/api")
-    logger.info("Routers included ✓")
+    logger.info("Routers included")
 
 
 _include_routers()
@@ -188,20 +188,18 @@ def build_boq(request, optimization, edging, pricing):
             or "None"
         )
 
-        eff = p.get_effective_board(request.board)
-
         items.append(
             BOQItem(
                 item_no=idx,
                 description=p.label or f"Panel {idx}",
-                size=f"{p.width}×{p.length} mm",
+                size=f"{p.width:.0f} x {p.length:.0f} mm",
                 quantity=p.quantity,
                 unit="pcs",
                 edges=edges,
-                board_type=eff.board_type,
-                thickness_mm=eff.thickness_mm,
-                company=eff.company,
-                colour=eff.color_name,
+                board_type=request.board.board_type,
+                thickness_mm=request.board.thickness_mm,
+                company=request.board.company,
+                colour=request.board.color_name,
                 material_amount=0.0,
             )
         )
@@ -210,7 +208,9 @@ def build_boq(request, optimization, edging, pricing):
         "board_type": request.board.board_type,
         "board_company": request.board.company,
         "board_color": request.board.color_name,
-        "board_size": f"{request.board.width_mm}×{request.board.length_mm} mm",
+        "board_size": (
+            f"{request.board.width_mm:.0f} x {request.board.length_mm:.0f} mm"
+        ),
         "boards_required": optimization.total_boards,
     }
 
@@ -270,7 +270,10 @@ def seed_sticker_tracking(db: Session, report_id: str, stickers) -> None:
 # ------------------------------------------------------------------ #
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.warning("Validation error %s %s: %s", request.method, request.url.path, exc.errors())
+    logger.warning(
+        "Validation error %s %s: %s",
+        request.method, request.url.path, exc.errors(),
+    )
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
@@ -297,7 +300,6 @@ async def root():
 async def health():
     try:
         from app.schemas import HealthResponse
-
         return HealthResponse()
     except Exception:
         return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
@@ -353,6 +355,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     # --- parse ---
     try:
         cutting_req = CuttingRequest(**req)
+        logger.info("CuttingRequest parsed successfully")
     except Exception as exc:
         logger.exception("Invalid request payload")
         raise HTTPException(status_code=422, detail=f"Invalid request: {exc}")
@@ -360,13 +363,22 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     # --- optimize ---
     try:
         boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
+        logger.info(
+            "Optimization complete: boards=%d  panels=%d  efficiency=%.1f%%",
+            optimization.total_boards,
+            optimization.total_panels,
+            optimization.overall_efficiency_percent,
+        )
     except Exception as exc:
         logger.exception("Optimization failed")
         raise HTTPException(status_code=400, detail=f"Optimization failed: {exc}")
 
     # --- pricing ---
     try:
-        pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
+        pricing = calculate_pricing(
+            cutting_req, optimization, edging_summary.total_meters,
+        )
+        logger.info("Pricing calculated")
     except Exception as exc:
         logger.exception("Pricing calculation failed")
         raise HTTPException(status_code=500, detail=f"Pricing failed: {exc}")
@@ -374,6 +386,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     # --- BOQ ---
     try:
         boq = build_boq(cutting_req, optimization, edging_summary, pricing)
+        logger.info("BOQ built")
     except Exception as exc:
         logger.exception("BOQ build failed")
         raise HTTPException(status_code=500, detail=f"BOQ failed: {exc}")
@@ -384,225 +397,33 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     # --- stock ---
     try:
         board_requirements = aggregate_board_requirements_from_layouts(boards)
+        logger.info("Board requirements: %s", board_requirements)
     except Exception as exc:
         logger.exception("Board aggregation failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
     try:
-        stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
+        stock_impact = compute_stock_impact_from_selected_boards(
+            db, board_requirements,
+        )
+        logger.info("Stock impact rows: %d", len(stock_impact))
     except Exception as exc:
         logger.exception("Stock impact failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
     # --- persist ---
     try:
-        save_job_report(db=db, report_id=report_id, request_json=request_json, stock_impact=stock_impact)
+        save_job_report(
+            db=db,
+            report_id=report_id,
+            request_json=request_json,
+            stock_impact=stock_impact,
+        )
+        logger.info("Job report saved: %s", report_id)
     except Exception as exc:
         logger.exception("Save job report failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
     try:
         seed_sticker_tracking(db, report_id, stickers)
-    except Exception as exc:
-        logger.exception("Sticker tracking seed failed")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    # --- response ---
-    try:
-        response = CuttingResponse(
-            request_summary={
-                "project_name": cutting_req.project_name,
-                "customer_name": cutting_req.customer_name,
-                "total_panels": optimization.total_panels,
-            },
-            optimization=optimization,
-            layouts=boards,
-            edging=edging_summary,
-            boq=boq,
-            stickers=stickers,
-            stock_impact=stock_impact,
-            report_id=report_id,
-            generated_at=datetime.utcnow(),
-        )
-        logger.info("Optimization response ready – report_id=%s", report_id)
-        return response
-    except Exception as exc:
-        logger.exception("Response build failed")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-# ------------------------------------------------------------------ #
-#  PDF report                                                         #
-# ------------------------------------------------------------------ #
-@app.post("/api/optimize/report")
-async def export_report_pdf(req: dict, db: Session = Depends(get_db)):
-    from app.job_service import (
-        aggregate_board_requirements_from_layouts,
-        compute_stock_impact_from_selected_boards,
-    )
-    from app.optimizer import run_optimization
-    from app.pdf_generator import generate_report_pdf
-    from app.pricing import calculate_pricing
-    from app.schemas import CuttingRequest
-
-    try:
-        cutting_req = CuttingRequest(**req)
-        boards, optimization, edging_summary, stickers = run_optimization(cutting_req)
-        pricing = calculate_pricing(cutting_req, optimization, edging_summary.total_meters)
-        boq = build_boq(cutting_req, optimization, edging_summary, pricing)
-
-        board_requirements = aggregate_board_requirements_from_layouts(boards)
-        stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
-        report_id = f"RPT-{uuid4().hex[:10].upper()}"
-
-        pdf_bytes = generate_report_pdf(
-            request=cutting_req,
-            layouts=boards,
-            optimization=optimization,
-            edging=edging_summary,
-            boq=boq,
-            stickers=stickers,
-            stock_impact=stock_impact,
-            report_id=report_id,
-        )
-
-        filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
-    except Exception as exc:
-        logger.exception("PDF report generation failed")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-# ------------------------------------------------------------------ #
-#  Labels PDF                                                         #
-# ------------------------------------------------------------------ #
-@app.post("/api/optimize/labels")
-async def export_labels_pdf(req: dict, db: Session = Depends(get_db)):
-    from app.optimizer import run_optimization
-    from app.pdf_generator import generate_labels_pdf
-    from app.schemas import CuttingRequest
-
-    try:
-        cutting_req = CuttingRequest(**req)
-        _boards, _opt, _edging, stickers = run_optimization(cutting_req)
-
-        report_id = f"RPT-{uuid4().hex[:10].upper()}"
-        seed_sticker_tracking(db, report_id, stickers)
-
-        pdf_bytes = generate_labels_pdf(stickers)
-
-        filename = f"labels_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"},
-        )
-    except Exception as exc:
-        logger.exception("Labels PDF generation failed")
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-# ------------------------------------------------------------------ #
-#  Tracking                                                           #
-# ------------------------------------------------------------------ #
-@app.get("/api/tracking/{serial_number}")
-async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
-    from app.models import StickerTracking
-    from app.schemas import StickerTrackingResponse
-
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Tracking label not found")
-    return StickerTrackingResponse(**serialize_tracking(item))
-
-
-@app.post("/api/tracking/{serial_number}/status")
-async def update_tracking_status(
-    serial_number: str,
-    payload: Dict[str, Any],
-    db: Session = Depends(get_db),
-    x_api_key: Optional[str] = Header(default=None),
-):
-    from app.models import StickerTracking
-
-    require_admin_api_key(x_api_key)
-
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Tracking label not found")
-
-    new_status = payload.get("status")
-    if new_status not in {"in_store", "out_for_delivery", "delivered"}:
-        raise HTTPException(status_code=400, detail="Invalid status")
-
-    item.status = new_status
-    item.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(item)
-    return {"status": "ok", "tracking": serialize_tracking(item)}
-
-
-@app.post("/api/tracking/{serial_number}/advance")
-async def advance_tracking_status(
-    serial_number: str,
-    db: Session = Depends(get_db),
-    x_api_key: Optional[str] = Header(default=None),
-):
-    from app.models import StickerTracking
-
-    require_admin_api_key(x_api_key)
-
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Tracking label not found")
-
-    _TRANSITIONS = {
-        "in_store": "out_for_delivery",
-        "out_for_delivery": "delivered",
-    }
-    item.status = _TRANSITIONS.get(item.status, "delivered")
-    item.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(item)
-    return {"status": "ok", "tracking": serialize_tracking(item)}
-
-
-# ------------------------------------------------------------------ #
-#  Lifecycle events                                                   #
-# ------------------------------------------------------------------ #
-@app.on_event("startup")
-async def startup_event():
-    logger.info("=" * 50)
-    logger.info("PanelPro API started ✓")
-    logger.info("Port: %s  |  Docs: /docs", PORT)
-    logger.info("=" * 50)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("PanelPro API shutting down …")
-
-
-# ------------------------------------------------------------------ #
-#  Dev entry-point                                                    #
-# ------------------------------------------------------------------ #
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run("app.main:app", host="0.0.0.0", port=PORT, reload=True, log_level="info")
+        logger.info("Sticker tracking seeded: %d 
