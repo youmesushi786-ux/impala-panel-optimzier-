@@ -82,16 +82,9 @@ async def update_board(
         raise HTTPException(status_code=404, detail="Board not found")
 
     updatable = {
-        "board_type",
-        "thickness_mm",
-        "color_name",
-        "company",
-        "width_mm",
-        "length_mm",
-        "price_per_board",
-        "quantity",
-        "low_stock_threshold",
-        "is_active",
+        "board_type", "thickness_mm", "color_name", "company",
+        "width_mm", "length_mm", "price_per_board", "quantity",
+        "low_stock_threshold", "is_active",
     }
     for key in updatable:
         if key in payload:
