@@ -1,54 +1,55 @@
-from __future__ import annotations
-
-from .schemas import PricingSummary, PricingLine
-from .config import TAX_NAME, TAX_RATE, CURRENCY, CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER
+from app.config import CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER, TAX_RATE
+from app.schemas import CuttingRequest, OptimizationSummary, PricingLine, PricingSummary
 
 
-def calculate_pricing(request, optimization, edging_meters: float) -> PricingSummary:
-    board_price = float(request.board.price_per_board or 0)
-    board_qty = optimization.total_boards
-    board_amount = board_qty * board_price
+def calculate_pricing(
+    request: CuttingRequest,
+    optimization: OptimizationSummary,
+    total_edging_meters: float,
+) -> PricingSummary:
+    lines = []
 
-    cutting_amount = board_qty * CUTTING_PRICE_PER_BOARD
-    edging_amount = edging_meters * EDGING_PRICE_PER_METER
-
-    lines = [
+    # 1. Board material
+    board_cost = optimization.total_boards * request.board.price_per_board
+    lines.append(
         PricingLine(
             item="Boards",
-            description=f"{request.board.board_type} {request.board.thickness_mm}mm {request.board.color_name} {request.board.company}",
-            quantity=board_qty,
-            unit="boards",
-            unit_price=board_price,
-            amount=board_amount,
-        ),
+            description=(
+                f"{optimization.total_boards}x "
+                f"{request.board.board_type} {request.board.color_name}"
+            ),
+            quantity=float(optimization.total_boards),
+            unit_price=request.board.price_per_board,
+            amount=round(board_cost, 2),
+        )
+    )
+
+    # 2. Cutting
+    cutting_cost = optimization.total_boards * CUTTING_PRICE_PER_BOARD
+    lines.append(
         PricingLine(
             item="Cutting",
-            description="Board cutting service",
-            quantity=board_qty,
-            unit="boards",
+            description=f"Cutting {optimization.total_boards} board(s)",
+            quantity=float(optimization.total_boards),
             unit_price=CUTTING_PRICE_PER_BOARD,
-            amount=cutting_amount,
-        ),
+            amount=round(cutting_cost, 2),
+        )
+    )
+
+    # 3. Edging
+    edging_cost = total_edging_meters * EDGING_PRICE_PER_METER
+    lines.append(
         PricingLine(
             item="Edging",
-            description="Edge banding service",
-            quantity=edging_meters,
-            unit="m",
+            description=f"{total_edging_meters:.2f} m edge-banding",
+            quantity=total_edging_meters,
             unit_price=EDGING_PRICE_PER_METER,
-            amount=edging_amount,
-        ),
-    ]
-
-    subtotal = board_amount + cutting_amount + edging_amount
-    tax_amount = subtotal * (TAX_RATE / 100)
-    total = subtotal + tax_amount
-
-    return PricingSummary(
-        lines=lines,
-        subtotal=subtotal,
-        tax_name=TAX_NAME,
-        tax_rate=TAX_RATE,
-        tax_amount=tax_amount,
-        total=total,
-        currency=CURRENCY,
+            amount=round(edging_cost, 2),
+        )
     )
+
+    subtotal = round(sum(ln.amount for ln in lines), 2)
+    tax = round(subtotal * TAX_RATE, 2)
+    total = round(subtotal + tax, 2)
+
+    return PricingSummary(lines=lines, subtotal=subtotal, tax=tax, total=total)
