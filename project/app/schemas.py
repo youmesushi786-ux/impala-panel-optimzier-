@@ -67,7 +67,6 @@ class PanelSpec(BaseModel):
 
     @property
     def edge_length_mm(self) -> float:
-        """Total edging millimetres for ONE piece."""
         total = 0.0
         if self.edging.top:
             total += self.width
@@ -81,7 +80,6 @@ class PanelSpec(BaseModel):
 
     @property
     def total_edge_length_mm(self) -> float:
-        """Total edging mm across all pieces (quantity)."""
         return self.edge_length_mm * self.quantity
 
 
@@ -132,9 +130,7 @@ class CutSegment(BaseModel):
 
 
 # ------------------------------------------------------------------ #
-#  Board layout  (produced by optimizer)                              #
-#  NOTE: board-material info is in the `material` dict, NOT as       #
-#  top-level attributes like board_type / thickness_mm.               #
+#  Board layout                                                       #
 # ------------------------------------------------------------------ #
 
 class BoardLayout(BaseModel):
@@ -193,7 +189,7 @@ class OptimizationSummary(BaseModel):
 
 
 # ------------------------------------------------------------------ #
-#  Sticker labels (produced by optimizer)                             #
+#  Sticker labels                                                     #
 # ------------------------------------------------------------------ #
 
 class StickerLabel(BaseModel):
@@ -267,14 +263,15 @@ class BOQSummary(BaseModel):
 # ------------------------------------------------------------------ #
 
 class StockImpactItem(BaseModel):
-    board_item_id: int = 0
+    board_item_id: Optional[int] = None
     board_type: str = ""
     thickness_mm: float = 0.0
     color_name: str = ""
     company: str = ""
     width_mm: float = 0.0
     length_mm: float = 0.0
-    boards_needed: int = 0
+    price_per_board: float = 0.0
+    quantity_needed: int = 0
     current_stock: int = 0
     stock_after: int = 0
     sufficient: bool = False
@@ -308,12 +305,15 @@ class StickerTrackingResponse(BaseModel):
 # ------------------------------------------------------------------ #
 
 class CuttingResponse(BaseModel):
+    report_id: str = ""
     request_summary: Dict[str, Any] = Field(default_factory=dict)
     optimization: OptimizationSummary = Field(default_factory=OptimizationSummary)
     layouts: List[BoardLayout] = Field(default_factory=list)
     edging: EdgingSummary = Field(default_factory=EdgingSummary)
+    pricing: Optional[PricingSummary] = None
     boq: Optional[BOQSummary] = None
     stickers: List[StickerLabel] = Field(default_factory=list)
     stock_impact: List[StockImpactItem] = Field(default_factory=list)
-    report_id: str = ""
-    generated_at: Optional[datetime] = None
+    generated_at: str = Field(
+        default_factory=lambda: datetime.utcnow().isoformat()
+    )
