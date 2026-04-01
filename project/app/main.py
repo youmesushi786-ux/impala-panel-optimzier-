@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import uuid4
 from typing import Dict, Any
 
-from fastapi import FastAPI, Request, Depends, HTTPException, Header
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
@@ -28,7 +28,6 @@ from app.pricing import calculate_pricing
 from app.config import (
     CUTTING_PRICE_PER_BOARD,
     EDGING_PRICE_PER_METER,
-    ADMIN_API_KEY,
 )
 from app.pdf_generator import generate_report_pdf, generate_labels_pdf
 from app.job_service import (
@@ -39,44 +38,40 @@ from app.job_service import (
 from app.stock_routes import router as board_router
 from app.job_routes import router as job_router
 
-# ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # Logging
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("panelpro")
 
-# ─────────────────────────────────────────────────────────────
-# App
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# FastAPI App
+# ─────────────────────────────────────────────
 app = FastAPI(title="PanelPro - Cutting Optimizer")
 
-# Create DB tables
+# Create database tables
 Base.metadata.create_all(bind=engine)
 
-# ─────────────────────────────────────────────────────────────
-# Static
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Static Files
+# ─────────────────────────────────────────────
 if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ─────────────────────────────────────────────────────────────
-# ✅ PRODUCTION SAFE CORS
-# ─────────────────────────────────────────────────────────────
-ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS")
-
-if ALLOWED_ORIGINS_ENV:
-    origins = [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
-else:
-    origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "https://impala-panel-optimzier.onrender.com",
-        "https://impala-panel-optimzier-v1.onrender.com",
-    ]
+# ─────────────────────────────────────────────
+# ✅ CORS (SAFE FOR TEST + RENDER)
+# ─────────────────────────────────────────────
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "https://impala-panel-optimzier.onrender.com",
+    "https://impala-panel-optimzier-v1.onrender.com",
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -88,34 +83,31 @@ app.add_middleware(
 
 logger.info(f"CORS enabled for: {origins}")
 
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 # Routers
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 app.include_router(board_router, prefix="/api")
 app.include_router(job_router, prefix="/api")
 
-# ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
-def require_admin_api_key(x_api_key: str | None):
-    if ADMIN_API_KEY and x_api_key != ADMIN_API_KEY:
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-
+# ─────────────────────────────────────────────
+# Validation Error Handler
+# ─────────────────────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
-# ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # Health Check
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
+async def health():
     return HealthResponse(status="ok", timestamp=datetime.utcnow())
 
-# ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # Public Board Catalog
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 @app.get("/api/boards/catalog")
 async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
     items = db.query(BoardItem).filter(BoardItem.is_active.is_(True)).all()
@@ -138,9 +130,10 @@ async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
         ]
     }
 
-# ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # BOQ Builder
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSummary:
     items: list[BOQItem] = []
 
@@ -182,9 +175,10 @@ def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSumm
         pricing=pricing,
     )
 
-# ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
 # Optimize Endpoint
-# ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
 @app.post("/api/optimize", response_model=CuttingResponse)
 async def api_optimize(
     req: CuttingRequest,
@@ -225,9 +219,10 @@ async def api_optimize(
         generated_at=datetime.utcnow(),
     )
 
-# ─────────────────────────────────────────────────────────────
-# PDF Export
-# ─────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────
+# Export Full Report PDF
+# ─────────────────────────────────────────────
 @app.post("/api/optimize/report")
 async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     boards, optimization, edging_summary, stickers = run_optimization(req)
@@ -249,4 +244,44 @@ async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": "attachment; filename=report.pdf"},
+    )
+
+
+# ─────────────────────────────────────────────
+# Export Sticker Labels PDF
+# ─────────────────────────────────────────────
+@app.post("/api/optimize/labels")
+async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
+    boards, optimization, edging_summary, stickers = run_optimization(req)
+
+    pdf_bytes = generate_labels_pdf(stickers)
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=labels.pdf"},
+    )
+
+
+# ─────────────────────────────────────────────
+# Tracking (No API Key Required)
+# ─────────────────────────────────────────────
+@app.get("/api/tracking/{serial_number}", response_model=StickerTrackingResponse)
+async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
+    item = (
+        db.query(StickerTracking)
+        .filter(StickerTracking.serial_number == serial_number)
+        .first()
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="Tracking label not found")
+
+    return StickerTrackingResponse(
+        serial_number=item.serial_number,
+        report_id=item.report_id,
+        panel_label=item.panel_label,
+        status=item.status,
+        qr_url=item.qr_url,
+        updated_at=item.updated_at,
+        board_number=item.board_number,
     )
