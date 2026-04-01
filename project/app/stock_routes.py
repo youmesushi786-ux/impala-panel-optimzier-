@@ -1,131 +1,143 @@
+from __future__ import annotations
+
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.db import SessionLocal
+from app.db import get_db
 from app.models import BoardItem
 
-logger = logging.getLogger("panelpro.stock")
-router = APIRouter(tags=["Stock Management"])
+logger = logging.getLogger("panelpro")
+router = APIRouter(tags=["boards"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# ── Schemas ──────────────────────────────────────────────
+class BoardCreate(BaseModel):
+    board_type: str = "MDF"
+    thickness_mm: float = 18.0
+    color_name: str = "White"
+    company: str = "Generic"
+    width_mm: float = 2440.0
+    length_mm: float = 1220.0
+    price_per_board: float = 0.0
+    quantity: int = 0
+    low_stock_threshold: int = 5
+    is_active: bool = True
 
 
+class BoardUpdate(BaseModel):
+    board_type: Optional[str] = None
+    thickness_mm: Optional[float] = None
+    color_name: Optional[str] = None
+    company: Optional[str] = None
+    width_mm: Optional[float] = None
+    length_mm: Optional[float] = None
+    price_per_board: Optional[float] = None
+    quantity: Optional[int] = None
+    low_stock_threshold: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+def _row_to_dict(row: BoardItem) -> Dict[str, Any]:
+    return {
+        "id": row.id,
+        "board_type": row.board_type,
+        "thickness_mm": row.thickness_mm,
+        "color_name": row.color_name,
+        "company": row.company,
+        "width_mm": row.width_mm,
+        "length_mm": row.length_mm,
+        "price_per_board": row.price_per_board,
+        "quantity": row.quantity,
+        "low_stock_threshold": row.low_stock_threshold,
+        "is_active": row.is_active,
+    }
+
+
+# ── List boards ─────────────────────────────────────────
 @router.get("/boards")
-async def list_boards(
-    active_only: bool = Query(True),
+def list_boards(
+    active_only: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    query = db.query(BoardItem)
+    q = db.query(BoardItem)
     if active_only:
-        query = query.filter(BoardItem.is_active.is_(True))
-    items = query.all()
-    return {
-        "items": [
-            {
-                "id": i.id,
-                "board_type": i.board_type,
-                "thickness_mm": i.thickness_mm,
-                "color_name": i.color_name,
-                "company": i.company,
-                "width_mm": i.width_mm,
-                "length_mm": i.length_mm,
-                "price_per_board": i.price_per_board,
-                "quantity": i.quantity,
-                "low_stock_threshold": i.low_stock_threshold,
-                "is_active": i.is_active,
-            }
-            for i in items
-        ]
-    }
+        q = q.filter(BoardItem.is_active.is_(True))
+    items = q.order_by(BoardItem.id).all()
+    return {"items": [_row_to_dict(i) for i in items]}
 
 
-@router.post("/boards")
-async def create_board(
-    payload: Dict[str, Any],
+# ── Create board ─────────────────────────────────────────
+@router.post("/boards", status_code=201)
+def create_board(
+    payload: BoardCreate,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    board = BoardItem(
-        board_type=payload.get("board_type", "MDF"),
-        thickness_mm=payload.get("thickness_mm", 18.0),
-        color_name=payload.get("color_name", "White"),
-        company=payload.get("company", "Generic"),
-        width_mm=payload.get("width_mm", 2440.0),
-        length_mm=payload.get("length_mm", 1220.0),
-        price_per_board=payload.get("price_per_board", 0.0),
-        quantity=payload.get("quantity", 0),
-        low_stock_threshold=payload.get("low_stock_threshold", 5),
-        is_active=payload.get("is_active", True),
-    )
-    db.add(board)
+    item = BoardItem(**payload.model_dump())
+    db.add(item)
     db.commit()
-    db.refresh(board)
-    return {"id": board.id, "status": "created"}
+    db.refresh(item)
+    logger.info(f"Created board #{item.id}")
+    return _row_to_dict(item)
 
 
+# ── Get single board ────────────────────────────────────
+@router.get("/boards/{board_id}")
+def get_board(board_id: int, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    item = db.query(BoardItem).filter(BoardItem.id == board_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail="Board not found")
+    return _row_to_dict(item)
+
+
+# ── Update board ─────────────────────────────────────────
 @router.put("/boards/{board_id}")
-async def update_board(
+def update_board(
     board_id: int,
-    payload: Dict[str, Any],
+    payload: BoardUpdate,
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    board = db.query(BoardItem).filter(BoardItem.id == board_id).first()
-    if not board:
+    item = db.query(BoardItem).filter(BoardItem.id == board_id).first()
+    if not item:
         raise HTTPException(status_code=404, detail="Board not found")
 
-    updatable = {
-        "board_type", "thickness_mm", "color_name", "company",
-        "width_mm", "length_mm", "price_per_board", "quantity",
-        "low_stock_threshold", "is_active",
-    }
-    for key in updatable:
-        if key in payload:
-            setattr(board, key, payload[key])
+    data = payload.model_dump(exclude_unset=True)
+    for key, val in data.items():
+        setattr(item, key, val)
 
     db.commit()
-    db.refresh(board)
-    return {"id": board.id, "status": "updated"}
+    db.refresh(item)
+    logger.info(f"Updated board #{item.id}")
+    return _row_to_dict(item)
 
 
+# ── Delete board ─────────────────────────────────────────
 @router.delete("/boards/{board_id}")
-async def delete_board(board_id: int, db: Session = Depends(get_db)):
-    board = db.query(BoardItem).filter(BoardItem.id == board_id).first()
-    if not board:
+def delete_board(board_id: int, db: Session = Depends(get_db)) -> Dict[str, str]:
+    item = db.query(BoardItem).filter(BoardItem.id == board_id).first()
+    if not item:
         raise HTTPException(status_code=404, detail="Board not found")
-    db.delete(board)
+    db.delete(item)
     db.commit()
-    return {"id": board_id, "status": "deleted"}
+    logger.info(f"Deleted board #{board_id}")
+    return {"status": "deleted", "id": str(board_id)}
 
 
-@router.get("/boards/low-stock")
-async def low_stock_boards(db: Session = Depends(get_db)):
-    items = (
-        db.query(BoardItem)
-        .filter(
-            BoardItem.is_active.is_(True),
-            BoardItem.quantity <= BoardItem.low_stock_threshold,
-        )
-        .all()
-    )
-    return {
-        "items": [
-            {
-                "id": i.id,
-                "board_type": i.board_type,
-                "thickness_mm": i.thickness_mm,
-                "color_name": i.color_name,
-                "company": i.company,
-                "quantity": i.quantity,
-                "low_stock_threshold": i.low_stock_threshold,
-            }
-            for i in items
-        ]
-    }
+# ── Bulk import ──────────────────────────────────────────
+@router.post("/boards/bulk", status_code=201)
+def bulk_create_boards(
+    payload: List[BoardCreate],
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    created = []
+    for p in payload:
+        item = BoardItem(**p.model_dump())
+        db.add(item)
+        created.append(item)
+    db.commit()
+    for c in created:
+        db.refresh(c)
+    return {"created": len(created), "items": [_row_to_dict(c) for c in created]}
