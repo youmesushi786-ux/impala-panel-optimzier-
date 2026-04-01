@@ -6,14 +6,13 @@ import os
 import sys
 import traceback
 from datetime import datetime
-from io import BytesIO
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
@@ -329,261 +328,6 @@ def seed_sticker_tracking(db: Session, report_id: str, stickers) -> None:
 
 
 # ------------------------------------------------------------------ #
-#  PDF Generation helpers                                             #
-# ------------------------------------------------------------------ #
-def _generate_report_pdf(payload: dict) -> bytes:
-    """
-    Generate a cutting report PDF from the optimization payload.
-    Uses reportlab if available, otherwise returns a simple text-based PDF.
-    """
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import mm
-        from reportlab.pdfgen import canvas
-
-        buf = BytesIO()
-        c = canvas.Canvas(buf, pagesize=A4)
-        width, height = A4
-
-        # Title
-        c.setFont("Helvetica-Bold", 18)
-        c.drawString(30, height - 40, "PanelPro - Cutting Report")
-
-        # Project info
-        c.setFont("Helvetica", 11)
-        y = height - 70
-        summary = payload.get("request_summary", {})
-        optimization = payload.get("optimization", {})
-
-        info_lines = [
-            f"Project: {summary.get('project_name', 'N/A')}",
-            f"Customer: {summary.get('customer_name', 'N/A')}",
-            f"Report ID: {payload.get('report_id', 'N/A')}",
-            f"Date: {payload.get('generated_at', datetime.utcnow().isoformat())[:10]}",
-            "",
-            f"Board: {summary.get('board_type', '')} - {summary.get('board_color', '')} ({summary.get('board_company', '')})",
-            f"Board Size: {summary.get('board_size', 'N/A')}",
-            f"Thickness: {summary.get('thickness_mm', '')} mm",
-            "",
-            f"Total Boards Used: {optimization.get('total_boards', 0)}",
-            f"Total Panels: {optimization.get('total_panels', 0)}",
-            f"Efficiency: {optimization.get('overall_efficiency_percent', 0):.1f}%",
-            f"Waste: {optimization.get('total_waste_percent', 0):.1f}%",
-            f"Kerf: {optimization.get('kerf_mm', 3)} mm",
-        ]
-
-        for line in info_lines:
-            c.drawString(30, y, line)
-            y -= 16
-            if y < 60:
-                c.showPage()
-                y = height - 40
-                c.setFont("Helvetica", 11)
-
-        # Board layouts
-        layouts = payload.get("layouts", [])
-        if layouts:
-            y -= 10
-            c.setFont("Helvetica-Bold", 13)
-            c.drawString(30, y, "Board Layouts")
-            y -= 20
-            c.setFont("Helvetica", 10)
-
-            for board in layouts:
-                bn = board.get("board_number", 0)
-                eff = board.get("efficiency_percent", 0)
-                pc = board.get("panel_count", 0)
-                c.setFont("Helvetica-Bold", 11)
-                c.drawString(30, y, f"Board #{bn}  —  {pc} panels  —  {eff:.1f}% efficiency")
-                y -= 16
-                c.setFont("Helvetica", 9)
-
-                panels = board.get("panels", [])
-                for p in panels:
-                    label = p.get("label", "Panel")
-                    pw = p.get("width", 0)
-                    pl = p.get("length", 0)
-                    px = p.get("x", 0)
-                    py_val = p.get("y", 0)
-                    rot = " (rotated)" if p.get("rotated") else ""
-                    c.drawString(50, y, f"{label}: {pw:.0f}x{pl:.0f} mm at ({px:.0f}, {py_val:.0f}){rot}")
-                    y -= 13
-                    if y < 60:
-                        c.showPage()
-                        y = height - 40
-                        c.setFont("Helvetica", 9)
-
-                y -= 8
-
-        # Pricing
-        pricing = payload.get("pricing", {})
-        if pricing:
-            y -= 5
-            c.setFont("Helvetica-Bold", 13)
-            c.drawString(30, y, "Pricing Summary")
-            y -= 18
-            c.setFont("Helvetica", 10)
-
-            for line in pricing.get("lines", []):
-                item = line.get("item", "")
-                desc = line.get("description", "")
-                amt = line.get("amount", 0)
-                c.drawString(50, y, f"{item}: {desc}  —  R {amt:.2f}")
-                y -= 14
-                if y < 60:
-                    c.showPage()
-                    y = height - 40
-                    c.setFont("Helvetica", 10)
-
-            y -= 5
-            c.setFont("Helvetica-Bold", 11)
-            c.drawString(50, y, f"Total: R {pricing.get('total', 0):.2f}")
-
-        c.save()
-        return buf.getvalue()
-
-    except ImportError:
-        logger.warning("reportlab not installed, generating simple text PDF")
-        return _generate_simple_pdf(payload)
-
-
-def _generate_simple_pdf(payload: dict) -> bytes:
-    """Fallback: minimal PDF without reportlab."""
-    lines = [
-        "PanelPro Cutting Report",
-        f"Report ID: {payload.get('report_id', 'N/A')}",
-        f"Generated: {payload.get('generated_at', '')}",
-        "",
-    ]
-    summary = payload.get("request_summary", {})
-    lines.append(f"Project: {summary.get('project_name', 'N/A')}")
-    lines.append(f"Customer: {summary.get('customer_name', 'N/A')}")
-
-    optimization = payload.get("optimization", {})
-    lines.append(f"Boards: {optimization.get('total_boards', 0)}")
-    lines.append(f"Panels: {optimization.get('total_panels', 0)}")
-    lines.append(f"Efficiency: {optimization.get('overall_efficiency_percent', 0):.1f}%")
-
-    text = "\n".join(lines)
-
-    # Build a minimal valid PDF manually
-    content = text.replace("\n", "\n")
-    stream = f"BT\n/F1 12 Tf\n36 756 Td\n14 TL\n"
-    for line in lines:
-        safe_line = line.replace("(", "\\(").replace(")", "\\)").replace("\\", "\\\\")
-        stream += f"({safe_line}) '\n"
-    stream += "ET"
-
-    pdf = (
-        "%PDF-1.4\n"
-        "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
-        "/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
-        f"4 0 obj<</Length {len(stream)}>>stream\n{stream}\nendstream\nendobj\n"
-        "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Courier>>endobj\n"
-        "xref\n0 6\n"
-    )
-
-    return pdf.encode("latin-1")
-
-
-def _generate_labels_pdf(payload: dict) -> bytes:
-    """Generate sticker labels PDF."""
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import mm
-        from reportlab.pdfgen import canvas
-
-        buf = BytesIO()
-        c = canvas.Canvas(buf, pagesize=A4)
-        width, height = A4
-
-        stickers = payload.get("stickers", [])
-        summary = payload.get("request_summary", {})
-
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(30, height - 35, "PanelPro - Panel Labels")
-        c.setFont("Helvetica", 10)
-        c.drawString(30, height - 52, f"Project: {summary.get('project_name', '')} | Customer: {summary.get('customer_name', '')}")
-
-        # Label layout: 2 columns, multiple rows
-        label_w = 250
-        label_h = 100
-        margin_x = 30
-        margin_y = 70
-        col_gap = 30
-        row_gap = 15
-        cols = 2
-        labels_per_page = 14
-
-        y = height - margin_y - 20
-        col = 0
-
-        for idx, sticker in enumerate(stickers):
-            x = margin_x + col * (label_w + col_gap)
-
-            # Label border
-            c.setStrokeColorRGB(0.3, 0.3, 0.3)
-            c.setLineWidth(0.5)
-            c.rect(x, y - label_h, label_w, label_h)
-
-            # Content
-            inner_y = y - 14
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(x + 5, inner_y, f"{sticker.get('panel_label', 'Panel')}")
-
-            c.setFont("Helvetica", 8)
-            inner_y -= 12
-            c.drawString(x + 5, inner_y, f"Size: {sticker.get('width', 0):.0f} x {sticker.get('length', 0):.0f} mm")
-            inner_y -= 11
-            c.drawString(x + 5, inner_y, f"Board #{sticker.get('board_number', 0)} | Pos: ({sticker.get('x', 0):.0f}, {sticker.get('y', 0):.0f})")
-            inner_y -= 11
-            rot = "Yes" if sticker.get("rotated") else "No"
-            c.drawString(x + 5, inner_y, f"Rotated: {rot}")
-            inner_y -= 11
-            c.drawString(x + 5, inner_y, f"Material: {sticker.get('board_type', '')} {sticker.get('color_name', '')}")
-            inner_y -= 11
-            c.drawString(x + 5, inner_y, f"Serial: {sticker.get('serial_number', '')}")
-            inner_y -= 11
-            if sticker.get("notes"):
-                c.drawString(x + 5, inner_y, f"Notes: {sticker.get('notes', '')}")
-
-            col += 1
-            if col >= cols:
-                col = 0
-                y -= label_h + row_gap
-
-            if y - label_h < 40:
-                c.showPage()
-                y = height - 40
-                col = 0
-                c.setFont("Helvetica", 8)
-
-        c.save()
-        return buf.getvalue()
-
-    except ImportError:
-        logger.warning("reportlab not installed for labels")
-        return _generate_simple_labels(payload)
-
-
-def _generate_simple_labels(payload: dict) -> bytes:
-    """Fallback labels without reportlab."""
-    lines = ["PanelPro - Panel Labels", ""]
-    for s in payload.get("stickers", []):
-        lines.append(f"Label: {s.get('panel_label', '')}")
-        lines.append(f"  Size: {s.get('width', 0):.0f} x {s.get('length', 0):.0f} mm")
-        lines.append(f"  Serial: {s.get('serial_number', '')}")
-        lines.append(f"  Board #{s.get('board_number', 0)}")
-        lines.append("")
-
-    payload_copy = dict(payload)
-    payload_copy["_text"] = "\n".join(lines)
-    return _generate_simple_pdf({"report_id": payload.get("report_id", ""), "request_summary": {}, "optimization": {}, "generated_at": ""})
-
-
-# ------------------------------------------------------------------ #
 #  Exception handlers                                                 #
 # ------------------------------------------------------------------ #
 @app.exception_handler(RequestValidationError)
@@ -738,7 +482,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     except Exception as exc:
         logger.exception("Stock impact failed (non-fatal)")
 
-    # ---- 7. Persist job report (non-fatal) ----
+    # ---- 7. Persist (non-fatal) ----
     try:
         save_job_report(
             db=db,
@@ -757,7 +501,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
     except Exception as exc:
         logger.exception("Sticker tracking failed (non-fatal)")
 
-    # ---- 9. Build CuttingResponse ----
+    # ---- 9. Build response ----
     try:
         request_summary = _build_request_summary(cutting_req)
         stock_impact_models = _stock_impact_dicts_to_models(stock_impact_dicts)
@@ -779,7 +523,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
         return response
 
     except Exception as exc:
-        logger.exception("CuttingResponse model build failed, using fallback")
+        logger.exception("CuttingResponse build failed, using fallback")
         try:
             fallback = _build_fallback_response(
                 report_id, cutting_req, boards, optimization,
@@ -787,7 +531,7 @@ async def api_optimize(req: dict, db: Session = Depends(get_db)):
             )
             return JSONResponse(status_code=200, content=fallback)
         except Exception as exc2:
-            logger.exception("Fallback response also failed")
+            logger.exception("Fallback also failed")
             raise HTTPException(
                 status_code=500,
                 detail=f"Response build failed: {exc}; fallback: {exc2}",
@@ -823,7 +567,6 @@ def _build_fallback_response(
         "stock_impact": stock_impact_dicts,
         "generated_at": datetime.utcnow().isoformat(),
     }
-
     safe_json = json.dumps(result, default=_json_safe)
     return json.loads(safe_json)
 
@@ -832,19 +575,36 @@ def _build_fallback_response(
 #  PDF Report endpoint                                                #
 # ------------------------------------------------------------------ #
 @app.post("/api/optimize/report")
-async def generate_report_pdf(payload: dict):
-    """Generate and return a cutting report PDF."""
+async def generate_report_pdf_endpoint(payload: dict):
+    """Generate cutting report PDF from optimization results."""
     try:
-        logger.info("Generating report PDF for %s", payload.get("report_id", "unknown"))
-        pdf_bytes = _generate_report_pdf(payload)
+        from app.pdf_generator import generate_report_pdf
+
+        logger.info(
+            "Generating report PDF for %s (%d layouts)",
+            payload.get("report_id", "unknown"),
+            len(payload.get("layouts", [])),
+        )
+
+        pdf_bytes = generate_report_pdf(payload=payload)
+
+        if not pdf_bytes or len(pdf_bytes) < 10:
+            logger.error("PDF generation returned empty bytes")
+            raise HTTPException(status_code=500, detail="PDF generation returned empty")
+
+        report_id = payload.get("report_id", "report")
+        logger.info("Report PDF generated: %d bytes", len(pdf_bytes))
 
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="cutting-report-{payload.get("report_id", "report")}.pdf"',
+                "Content-Disposition": f'attachment; filename="cutting-report-{report_id}.pdf"',
+                "Content-Length": str(len(pdf_bytes)),
             },
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Report PDF generation failed")
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
@@ -854,22 +614,33 @@ async def generate_report_pdf(payload: dict):
 #  Labels PDF endpoint                                                #
 # ------------------------------------------------------------------ #
 @app.post("/api/optimize/labels")
-async def generate_labels_pdf(payload: dict):
-    """Generate and return a sticker labels PDF."""
+async def generate_labels_pdf_endpoint(payload: dict):
+    """Generate sticker labels PDF."""
     try:
-        logger.info(
-            "Generating labels PDF: %d stickers",
-            len(payload.get("stickers", [])),
-        )
-        pdf_bytes = _generate_labels_pdf(payload)
+        from app.pdf_generator import generate_labels_pdf
+
+        stickers = payload.get("stickers", [])
+        logger.info("Generating labels PDF: %d stickers", len(stickers))
+
+        pdf_bytes = generate_labels_pdf(payload=payload)
+
+        if not pdf_bytes or len(pdf_bytes) < 10:
+            logger.error("Labels PDF generation returned empty bytes")
+            raise HTTPException(status_code=500, detail="Labels PDF generation returned empty")
+
+        report_id = payload.get("report_id", "labels")
+        logger.info("Labels PDF generated: %d bytes", len(pdf_bytes))
 
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="panel-labels-{payload.get("report_id", "labels")}.pdf"',
+                "Content-Disposition": f'attachment; filename="panel-labels-{report_id}.pdf"',
+                "Content-Length": str(len(pdf_bytes)),
             },
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Labels PDF generation failed")
         raise HTTPException(status_code=500, detail=f"Labels PDF generation failed: {exc}")
@@ -997,7 +768,6 @@ async def confirm_job(
     db: Session = Depends(get_db),
     x_api_key: Optional[str] = Header(None),
 ):
-    """Confirm a job report and deduct stock."""
     require_admin_api_key(x_api_key)
     from app.job_service import confirm_job_report
 
@@ -1082,10 +852,6 @@ async def deduct_stock(
     db.commit()
     db.refresh(item)
 
-    logger.info(
-        "Stock deducted: item=%s qty=%d remaining=%d",
-        board_item_id, quantity, item.quantity,
-    )
     return {
         "detail": f"Deducted {quantity} from {item.color_name}",
         "remaining": item.quantity,
@@ -1131,10 +897,6 @@ async def add_stock(
     db.commit()
     db.refresh(item)
 
-    logger.info(
-        "Stock added: item=%s qty=%d total=%d",
-        board_item_id, quantity, item.quantity,
-    )
     return {
         "detail": f"Added {quantity} to {item.color_name}",
         "total": item.quantity,
@@ -1242,11 +1004,9 @@ async def reoptimize_job(report_id: str, db: Session = Depends(get_db)):
         except Exception as exc:
             logger.warning("Sticker seeding failed during reoptimize: %s", exc)
 
-        request_summary = _build_request_summary(cutting_req)
-
         response = CuttingResponse(
             report_id=new_report_id,
-            request_summary=request_summary,
+            request_summary=_build_request_summary(cutting_req),
             optimization=optimization,
             layouts=boards,
             edging=edging_summary,
