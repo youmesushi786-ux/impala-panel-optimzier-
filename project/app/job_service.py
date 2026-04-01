@@ -3,163 +3,140 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
+
+from app.models import BoardItem, JobReport
 
 logger = logging.getLogger("panelpro")
 
 
-def aggregate_board_requirements_from_layouts(boards) -> List[Dict[str, Any]]:
-    reqs: Dict[str, Dict[str, Any]] = {}
-    for bl in boards:
-        # handle both pydantic model and dict
-        if hasattr(bl, "material"):
-            mat = bl.material if isinstance(bl.material, dict) else {}
-        elif isinstance(bl, dict):
-            mat = bl.get("material", {})
-        else:
-            mat = {}
+def save_job_report(
+    *,
+    db: Session,
+    report_id: str,
+    request_json: dict,
+    stock_impact: list,
+    project_name: str = "",
+    customer_name: str = "",
+) -> JobReport:
+    """Persist an optimization result so it can be confirmed later."""
+    report = JobReport(
+        report_id=report_id,
+        project_name=request_json.get("project_name", project_name),
+        customer_name=request_json.get("customer_name", customer_name),
+        request_json=json.dumps(request_json, default=str),
+        stock_impact_json=json.dumps(stock_impact, default=str),
+        status="pending",
+    )
+    db.add(report)
+    db.commit()
+    db.refresh(report)
+    logger.info(f"Saved job report {report_id}")
+    return report
 
-        bid = mat.get("board_item_id", "")
+
+def aggregate_board_requirements_from_layouts(
+    layouts,
+) -> List[Dict[str, Any]]:
+    """
+    Walk the list of BoardLayout objects and count how many physical boards
+    are needed, grouped by material.
+    """
+    buckets: Dict[tuple, Dict[str, Any]] = {}
+
+    for layout in layouts:
+        mat = layout.material if isinstance(layout.material, dict) else {}
         key = (
-            f"{bid}|{mat.get('board_type','')}|{mat.get('thickness_mm',0)}"
-            f"|{mat.get('company','')}|{mat.get('color_name','')}"
+            mat.get("board_item_id"),
+            mat.get("board_type", ""),
+            mat.get("thickness_mm", 0),
+            mat.get("company", ""),
+            mat.get("color_name", ""),
         )
-        if key not in reqs:
-            reqs[key] = {
-                "board_item_id": bid,
+
+        if key not in buckets:
+            buckets[key] = {
+                "board_item_id": mat.get("board_item_id"),
                 "board_type": mat.get("board_type", ""),
                 "thickness_mm": mat.get("thickness_mm", 0),
                 "company": mat.get("company", ""),
                 "color_name": mat.get("color_name", ""),
+                "width_mm": layout.board_width,
+                "length_mm": layout.board_length,
                 "price_per_board": mat.get("price_per_board", 0),
                 "quantity_needed": 0,
             }
-        reqs[key]["quantity_needed"] += 1
-    return list(reqs.values())
+        buckets[key]["quantity_needed"] += 1
+
+    return list(buckets.values())
 
 
 def compute_stock_impact_from_selected_boards(
-    db: Session, board_reqs: List[Dict[str, Any]],
+    db: Session,
+    board_requirements: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    from app.models import BoardItem
-    impact = []
-    for r in board_reqs:
-        bid = r.get("board_item_id")
-        needed = r.get("quantity_needed", 0)
-        item = None
-        if bid:
-            item = db.query(BoardItem).filter(BoardItem.id == bid).first()
-        stock = item.quantity if item else 0
-        after = stock - needed
+    """
+    For each material group compare required qty against current stock.
+    Returns a list of dicts with before/after quantities.
+    """
+    impact: List[Dict[str, Any]] = []
+
+    for req in board_requirements:
+        board_item_id = req.get("board_item_id")
+        current_stock = 0
+
+        if board_item_id:
+            item = db.query(BoardItem).filter(BoardItem.id == board_item_id).first()
+            if item:
+                current_stock = item.quantity
+
+        needed = req["quantity_needed"]
+        after = current_stock - needed
+
         impact.append({
-            "board_item_id": bid,
-            "board_type": r.get("board_type", ""),
-            "company": r.get("company", ""),
-            "color_name": r.get("color_name", ""),
-            "thickness_mm": r.get("thickness_mm", 0),
-            "price_per_board": r.get("price_per_board", 0),
+            "board_item_id": board_item_id,
+            "board_type": req.get("board_type", ""),
+            "thickness_mm": req.get("thickness_mm", 0),
+            "color_name": req.get("color_name", ""),
+            "company": req.get("company", ""),
+            "width_mm": req.get("width_mm", 0),
+            "length_mm": req.get("length_mm", 0),
+            "price_per_board": req.get("price_per_board", 0),
             "quantity_needed": needed,
-            "current_stock": stock,
-            "stock_after": after,
+            "current_stock": current_stock,
+            "after_stock": max(after, 0),
             "sufficient": after >= 0,
         })
+
     return impact
 
 
-def save_job_report(
-    db: Session,
-    report_id: str,
-    request_json: dict,
-    stock_impact: List[Dict[str, Any]],
-) -> None:
-    from app.models import JobReport
+def deduct_stock(db: Session, stock_impact: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Actually subtract quantities from BoardItem rows.
+    Returns updated impact list.
+    """
+    results = []
+    for item in stock_impact:
+        board_item_id = item.get("board_item_id")
+        needed = item.get("quantity_needed", 0)
+        if board_item_id and needed > 0:
+            board = db.query(BoardItem).filter(BoardItem.id == board_item_id).first()
+            if board:
+                before = board.quantity
+                board.quantity = max(0, board.quantity - needed)
+                results.append({
+                    **item,
+                    "previous_stock": before,
+                    "new_stock": board.quantity,
+                    "deducted": before - board.quantity,
+                })
+            else:
+                results.append({**item, "error": "Board not found in catalog"})
+        else:
+            results.append({**item, "skipped": True})
 
-    if db.query(JobReport).filter(JobReport.report_id == report_id).first():
-        logger.warning("Job %s already exists", report_id)
-        return
-
-    def _ser(obj):
-        if isinstance(obj, dict):
-            return json.dumps(obj, default=str)
-        return str(obj)
-
-    db.add(JobReport(
-        report_id=report_id,
-        request_json=_ser(request_json),
-        stock_impact_json=_ser(stock_impact),
-        confirmed=False,
-    ))
     db.commit()
-    logger.info("Saved job %s", report_id)
-
-
-def get_job_report(db: Session, report_id: str) -> Optional[Dict]:
-    from app.models import JobReport
-    job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
-    if not job:
-        return None
-
-    def _parse(val):
-        if not val:
-            return None
-        if isinstance(val, str):
-            try:
-                return json.loads(val)
-            except Exception:
-                return val
-        return val
-
-    return {
-        "id": job.id,
-        "report_id": job.report_id,
-        "request_json": _parse(job.request_json),
-        "stock_impact_json": _parse(job.stock_impact_json),
-        "confirmed": job.confirmed,
-        "confirmed_at": job.confirmed_at.isoformat() if job.confirmed_at else None,
-        "created_at": job.created_at.isoformat() if job.created_at else None,
-        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
-    }
-
-
-def confirm_job_report(db: Session, report_id: str) -> bool:
-    from app.models import BoardItem, JobReport, StockTransaction
-    job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
-    if not job:
-        return False
-    if job.confirmed:
-        logger.warning("Job %s already confirmed", report_id)
-        return True
-
-    impacts = []
-    if job.stock_impact_json:
-        try:
-            impacts = json.loads(job.stock_impact_json) if isinstance(
-                job.stock_impact_json, str) else job.stock_impact_json
-        except Exception:
-            pass
-
-    for imp in impacts:
-        bid = imp.get("board_item_id")
-        needed = imp.get("quantity_needed", 0)
-        if not bid or needed <= 0:
-            continue
-        item = db.query(BoardItem).filter(BoardItem.id == bid).first()
-        if not item:
-            continue
-        before = item.quantity
-        item.quantity = max(0, item.quantity - needed)
-        db.add(StockTransaction(
-            board_item_id=bid, transaction_type="deduct",
-            quantity=needed, balance_before=before,
-            balance_after=item.quantity, report_id=report_id,
-            reference=f"Confirmed: {report_id}",
-        ))
-        logger.info("Deducted %d of item %s (%d→%d)", needed, bid, before, item.quantity)
-
-    job.confirmed = True
-    job.confirmed_at = datetime.utcnow()
-    db.commit()
-    logger.info("Job %s confirmed", report_id)
-    return True
+    return results
