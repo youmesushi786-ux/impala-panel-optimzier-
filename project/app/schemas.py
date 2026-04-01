@@ -1,31 +1,16 @@
-"""
-Pydantic schemas — every model referenced by optimizer.py, main.py,
-job_service.py, pricing.py, and pdf_generator.py lives here.
-
-DO NOT add `from __future__ import annotations` — FastAPI needs
-concrete types at import-time for dependency injection.
-"""
+"""Pydantic schemas. DO NOT add `from __future__ import annotations`."""
 
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-
 from pydantic import BaseModel, Field
 
-
-# ------------------------------------------------------------------ #
-#  Enums                                                              #
-# ------------------------------------------------------------------ #
 
 class GrainAlignment(str, Enum):
     none = "none"
     horizontal = "horizontal"
     vertical = "vertical"
 
-
-# ------------------------------------------------------------------ #
-#  Edge / Options                                                     #
-# ------------------------------------------------------------------ #
 
 class EdgeSpec(BaseModel):
     top: bool = False
@@ -40,10 +25,6 @@ class Options(BaseModel):
     consider_grain: bool = False
     generate_cuts: bool = True
 
-
-# ------------------------------------------------------------------ #
-#  Board & Panel specs                                                #
-# ------------------------------------------------------------------ #
 
 class BoardSpec(BaseModel):
     board_item_id: Optional[int] = None
@@ -67,25 +48,17 @@ class PanelSpec(BaseModel):
 
     @property
     def edge_length_mm(self) -> float:
-        total = 0.0
-        if self.edging.top:
-            total += self.width
-        if self.edging.bottom:
-            total += self.width
-        if self.edging.left:
-            total += self.length
-        if self.edging.right:
-            total += self.length
-        return total
+        t = 0.0
+        if self.edging.top:    t += self.width
+        if self.edging.bottom: t += self.width
+        if self.edging.left:   t += self.length
+        if self.edging.right:  t += self.length
+        return t
 
     @property
     def total_edge_length_mm(self) -> float:
         return self.edge_length_mm * self.quantity
 
-
-# ------------------------------------------------------------------ #
-#  Request                                                            #
-# ------------------------------------------------------------------ #
 
 class CuttingRequest(BaseModel):
     project_name: str = "Untitled Project"
@@ -94,10 +67,6 @@ class CuttingRequest(BaseModel):
     panels: List[PanelSpec] = Field(default_factory=list)
     options: Optional[Options] = None
 
-
-# ------------------------------------------------------------------ #
-#  Placed panel / cuts                                                #
-# ------------------------------------------------------------------ #
 
 class PlacedPanel(BaseModel):
     panel_index: int = 0
@@ -129,10 +98,6 @@ class CutSegment(BaseModel):
     label: str = ""
 
 
-# ------------------------------------------------------------------ #
-#  Board layout                                                       #
-# ------------------------------------------------------------------ #
-
 class BoardLayout(BaseModel):
     board_number: int = 0
     board_width: float = 0.0
@@ -147,10 +112,6 @@ class BoardLayout(BaseModel):
     cuts: List[CutSegment] = Field(default_factory=list)
 
 
-# ------------------------------------------------------------------ #
-#  Edging                                                             #
-# ------------------------------------------------------------------ #
-
 class EdgingDetail(BaseModel):
     panel_label: str = ""
     quantity: int = 0
@@ -163,10 +124,6 @@ class EdgingSummary(BaseModel):
     total_meters: float = 0.0
     details: List[EdgingDetail] = Field(default_factory=list)
 
-
-# ------------------------------------------------------------------ #
-#  Optimization summary                                               #
-# ------------------------------------------------------------------ #
 
 class OptimizationSummary(BaseModel):
     total_boards: int = 0
@@ -188,10 +145,6 @@ class OptimizationSummary(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
-# ------------------------------------------------------------------ #
-#  Sticker labels                                                     #
-# ------------------------------------------------------------------ #
-
 class StickerLabel(BaseModel):
     serial_number: str = ""
     panel_label: str = ""
@@ -211,10 +164,6 @@ class StickerLabel(BaseModel):
     qr_url: str = ""
 
 
-# ------------------------------------------------------------------ #
-#  Pricing                                                            #
-# ------------------------------------------------------------------ #
-
 class PricingLine(BaseModel):
     item: str = ""
     description: str = ""
@@ -229,10 +178,6 @@ class PricingSummary(BaseModel):
     tax: float = 0.0
     total: float = 0.0
 
-
-# ------------------------------------------------------------------ #
-#  BOQ                                                                #
-# ------------------------------------------------------------------ #
 
 class BOQItem(BaseModel):
     item_no: int = 0
@@ -258,10 +203,6 @@ class BOQSummary(BaseModel):
     pricing: Optional[PricingSummary] = None
 
 
-# ------------------------------------------------------------------ #
-#  Stock impact                                                       #
-# ------------------------------------------------------------------ #
-
 class StockImpactItem(BaseModel):
     board_item_id: Optional[int] = None
     board_type: str = ""
@@ -277,18 +218,10 @@ class StockImpactItem(BaseModel):
     sufficient: bool = False
 
 
-# ------------------------------------------------------------------ #
-#  Health                                                             #
-# ------------------------------------------------------------------ #
-
 class HealthResponse(BaseModel):
     status: str = "healthy"
     timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
 
-
-# ------------------------------------------------------------------ #
-#  Tracking                                                           #
-# ------------------------------------------------------------------ #
 
 class StickerTrackingResponse(BaseModel):
     serial_number: str = ""
@@ -300,12 +233,9 @@ class StickerTrackingResponse(BaseModel):
     board_number: Optional[int] = None
 
 
-# ------------------------------------------------------------------ #
-#  Full cutting response                                              #
-# ------------------------------------------------------------------ #
-
 class CuttingResponse(BaseModel):
     report_id: str = ""
+    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     request_summary: Dict[str, Any] = Field(default_factory=dict)
     optimization: OptimizationSummary = Field(default_factory=OptimizationSummary)
     layouts: List[BoardLayout] = Field(default_factory=list)
@@ -314,6 +244,3 @@ class CuttingResponse(BaseModel):
     boq: Optional[BOQSummary] = None
     stickers: List[StickerLabel] = Field(default_factory=list)
     stock_impact: List[StockImpactItem] = Field(default_factory=list)
-    generated_at: str = Field(
-        default_factory=lambda: datetime.utcnow().isoformat()
-    )
