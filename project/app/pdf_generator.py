@@ -1,556 +1,353 @@
 import io
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("panelpro.pdf")
 
-_HAS_REPORTLAB = False
+_RL = False
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas as rl_canvas
-    _HAS_REPORTLAB = True
+    _RL = True
 except ImportError:
-    logger.info("reportlab not installed - PDF output will be minimal plain-text")
+    logger.info("reportlab not available — fallback PDFs only")
 
 
-# ------------------------------------------------------------------ #
-#  Report PDF  (accepts both models and dicts)                        #
-# ------------------------------------------------------------------ #
-
-def generate_report_pdf(
-    request=None,
-    layouts=None,
-    optimization=None,
-    edging=None,
-    boq=None,
-    stickers=None,
-    stock_impact=None,
-    report_id: str = "",
-    *,
-    payload: Optional[Dict[str, Any]] = None,
-) -> bytes:
-    """
-    Generate report PDF.
-    Can be called with individual typed args OR with payload=dict.
-    """
-    if payload is not None:
-        return _report_from_dict(payload)
-
-    if _HAS_REPORTLAB:
-        return _report_reportlab(
-            request, layouts or [], optimization, edging, boq,
-            stickers or [], stock_impact or [], report_id,
-        )
-    return _report_fallback(request, optimization, edging, report_id)
-
-
-def _safe_get(obj, key, default=""):
-    """Get attribute from model or key from dict."""
-    if obj is None:
-        return default
-    if isinstance(obj, dict):
-        return obj.get(key, default)
+def _g(obj, key, default=""):
+    if obj is None: return default
+    if isinstance(obj, dict): return obj.get(key, default)
     return getattr(obj, key, default)
 
 
-def _safe_list(obj, key):
-    """Get list attribute from model or key from dict."""
-    if obj is None:
-        return []
-    if isinstance(obj, dict):
-        return obj.get(key, [])
+def _gl(obj, key):
+    if obj is None: return []
+    if isinstance(obj, dict): return obj.get(key, [])
     return getattr(obj, key, [])
 
 
-def _report_from_dict(payload: Dict[str, Any]) -> bytes:
-    """Generate report PDF from the full response dict."""
-    if _HAS_REPORTLAB:
-        return _report_reportlab_dict(payload)
-    return _report_fallback_dict(payload)
+def _to_dict(obj):
+    if obj is None: return {}
+    if isinstance(obj, dict): return obj
+    if hasattr(obj, "model_dump"): return obj.model_dump(mode="python")
+    if hasattr(obj, "__dict__"): return {k:v for k,v in obj.__dict__.items() if not k.startswith("_")}
+    return {}
 
 
-def _report_reportlab_dict(payload: Dict[str, Any]) -> bytes:
-    buf = io.BytesIO()
-    c = rl_canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
-    y = h - 50
+def _normalize(payload: dict) -> dict:
+    """Turn ANY shape of payload into a flat predictable dict."""
+    rs = _g(payload, "request_summary", {})
+    if not isinstance(rs, dict): rs = {}
 
-    def _check(needed=60):
-        nonlocal y
-        if y < needed:
-            c.showPage()
-            y = h - 50
+    opt = _g(payload, "optimization") or _g(payload, "summary") or {}
+    opt = _to_dict(opt) if not isinstance(opt, dict) else opt
 
-    report_id = payload.get("report_id", "N/A")
-    summary = payload.get("request_summary", {})
-    optimization = payload.get("optimization", {})
-    edging = payload.get("edging", {})
-    layouts = payload.get("layouts", [])
-    pricing_data = payload.get("pricing", {})
-    boq = payload.get("boq", {})
+    layouts = _gl(payload, "layouts") or _gl(payload, "boards")
+    clean_layouts = []
+    for la in layouts:
+        la = _to_dict(la) if not isinstance(la, dict) else la
+        la["panels"] = [_to_dict(p) if not isinstance(p, dict) else p for p in la.get("panels", [])]
+        la["cuts"]   = [_to_dict(c) if not isinstance(c, dict) else c for c in la.get("cuts", [])]
+        clean_layouts.append(la)
 
-    # ---- Title ----
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(50, y, "PanelPro Cutting Report")
-    y -= 8
-    c.setLineWidth(2)
-    c.line(50, y, w - 50, y)
-    y -= 25
+    edging = _to_dict(_g(payload, "edging")) if not isinstance(_g(payload, "edging"), dict) else _g(payload, "edging", {})
+    edging_details = edging.get("details", [])
+    edging["details"] = [_to_dict(d) if not isinstance(d, dict) else d for d in edging_details]
 
-    # ---- Project info ----
-    c.setFont("Helvetica", 11)
-    info_lines = [
-        f"Report ID:    {report_id}",
-        f"Project:      {summary.get('project_name', 'N/A')}",
-        f"Customer:     {summary.get('customer_name', 'N/A')}",
-        f"Date:         {payload.get('generated_at', '')[:10]}",
-        "",
-        f"Board:        {summary.get('board_type', '')} - {summary.get('board_color', '')} ({summary.get('board_company', '')})",
-        f"Board Size:   {summary.get('board_size', 'N/A')}",
-        f"Thickness:    {summary.get('thickness_mm', '')} mm",
-        f"Kerf:         {summary.get('kerf', 3)} mm",
-    ]
+    pricing = _g(payload, "pricing") or {}
+    if not isinstance(pricing, dict):
+        pricing = _to_dict(pricing)
+    if not pricing:
+        boq = _g(payload, "boq") or {}
+        if not isinstance(boq, dict): boq = _to_dict(boq)
+        p2 = boq.get("pricing")
+        if p2:
+            pricing = _to_dict(p2) if not isinstance(p2, dict) else p2
+    if pricing.get("lines"):
+        pricing["lines"] = [_to_dict(l) if not isinstance(l, dict) else l for l in pricing["lines"]]
 
-    for line in info_lines:
-        c.drawString(50, y, line)
-        y -= 16
+    stickers = _gl(payload, "stickers")
+    stickers = [_to_dict(s) if not isinstance(s, dict) else s for s in stickers]
 
-    # ---- Optimization summary ----
-    y -= 10
-    _check(120)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawString(50, y, "Optimization Summary")
-    y -= 5
-    c.setLineWidth(0.5)
-    c.line(50, y, w - 50, y)
-    y -= 18
-
-    c.setFont("Helvetica", 11)
-    opt_lines = [
-        f"Total Boards:     {optimization.get('total_boards', 0)}",
-        f"Total Panels:     {optimization.get('total_panels', 0)}",
-        f"Efficiency:       {optimization.get('overall_efficiency_percent', 0):.1f}%",
-        f"Total Waste:      {optimization.get('total_waste_percent', 0):.1f}%",
-        f"Total Edging:     {edging.get('total_meters', 0):.2f} m",
-        f"Total Cuts:       {optimization.get('total_cuts', 0)}",
-    ]
-
-    for line in opt_lines:
-        c.drawString(50, y, line)
-        y -= 16
-
-    # ---- Board layouts ----
-    y -= 10
-    for layout in layouts:
-        _check(120)
-        material = layout.get("material", {}) if isinstance(layout, dict) else {}
-        btype = material.get("board_type", "")
-        color = material.get("color_name", "")
-
-        board_num = layout.get("board_number", 0) if isinstance(layout, dict) else getattr(layout, "board_number", 0)
-        board_w = layout.get("board_width", 0) if isinstance(layout, dict) else getattr(layout, "board_width", 0)
-        board_l = layout.get("board_length", 0) if isinstance(layout, dict) else getattr(layout, "board_length", 0)
-        panel_count = layout.get("panel_count", 0) if isinstance(layout, dict) else getattr(layout, "panel_count", 0)
-        efficiency = layout.get("efficiency_percent", 0) if isinstance(layout, dict) else getattr(layout, "efficiency_percent", 0)
-        waste = layout.get("waste_area_mm2", 0) if isinstance(layout, dict) else getattr(layout, "waste_area_mm2", 0)
-        panels = layout.get("panels", []) if isinstance(layout, dict) else getattr(layout, "panels", [])
-
-        c.setFont("Helvetica-Bold", 12)
-        c.drawString(50, y, f"Board #{board_num}  ({board_w:.0f} x {board_l:.0f} mm)  {btype} {color}")
-        y -= 16
-
-        c.setFont("Helvetica", 10)
-        c.drawString(70, y, f"Panels: {panel_count}   Efficiency: {efficiency:.1f}%   Waste: {waste:.0f} mm\u00b2")
-        y -= 14
-
-        c.setFont("Helvetica", 9)
-        for p in panels:
-            _check()
-            if isinstance(p, dict):
-                label = p.get("label", "Panel")
-                pw = p.get("width", 0)
-                pl = p.get("length", 0)
-                px = p.get("x", 0)
-                py_val = p.get("y", 0)
-                rot = " [rotated]" if p.get("rotated") else ""
-            else:
-                label = getattr(p, "label", "Panel")
-                pw = getattr(p, "width", 0)
-                pl = getattr(p, "length", 0)
-                px = getattr(p, "x", 0)
-                py_val = getattr(p, "y", 0)
-                rot = " [rotated]" if getattr(p, "rotated", False) else ""
-
-            c.drawString(90, y, f"- {label}: {pw:.0f} x {pl:.0f} mm  @ ({px:.0f}, {py_val:.0f}){rot}")
-            y -= 13
-
-        y -= 8
-
-    # ---- Edging details ----
-    edging_details = edging.get("details", []) if isinstance(edging, dict) else getattr(edging, "details", [])
-    if edging_details:
-        _check(100)
-        y -= 6
-        c.setFont("Helvetica-Bold", 13)
-        c.drawString(50, y, "Edging Details")
-        y -= 5
-        c.line(50, y, w - 50, y)
-        y -= 16
-
-        c.setFont("Helvetica", 10)
-        for ed in edging_details:
-            if isinstance(ed, dict):
-                elabel = ed.get("panel_label", "")
-                eqty = ed.get("quantity", 0)
-                etotal = ed.get("total_edge_m", 0)
-                eapplied = ed.get("edges_applied", "")
-            else:
-                elabel = getattr(ed, "panel_label", "")
-                eqty = getattr(ed, "quantity", 0)
-                etotal = getattr(ed, "total_edge_m", 0)
-                eapplied = getattr(ed, "edges_applied", "")
-
-            _check()
-            c.drawString(70, y, f"{elabel} x{eqty}: {etotal:.2f} m  Edges: {eapplied}")
-            y -= 14
-
-    # ---- Pricing ----
-    if pricing_data:
-        pricing_lines = []
-        subtotal = 0
-        tax = 0
-        total = 0
-
-        if isinstance(pricing_data, dict):
-            pricing_lines = pricing_data.get("lines", [])
-            subtotal = pricing_data.get("subtotal", 0)
-            tax = pricing_data.get("tax", 0)
-            total = pricing_data.get("total", 0)
-        elif hasattr(pricing_data, "lines"):
-            pricing_lines = pricing_data.lines
-            subtotal = pricing_data.subtotal
-            tax = pricing_data.tax
-            total = pricing_data.total
-
-        if pricing_lines:
-            _check(120)
-            y -= 10
-            c.setFont("Helvetica-Bold", 13)
-            c.drawString(50, y, "Pricing Summary")
-            y -= 5
-            c.line(50, y, w - 50, y)
-            y -= 18
-
-            c.setFont("Helvetica", 11)
-            for ln in pricing_lines:
-                if isinstance(ln, dict):
-                    item = ln.get("item", "")
-                    desc = ln.get("description", "")
-                    amt = ln.get("amount", 0)
-                else:
-                    item = getattr(ln, "item", "")
-                    desc = getattr(ln, "description", "")
-                    amt = getattr(ln, "amount", 0)
-
-                _check()
-                c.drawString(70, y, f"{item}: {desc}")
-                c.drawRightString(w - 70, y, f"R {amt:.2f}")
-                y -= 16
-
-            y -= 4
-            c.line(70, y + 8, w - 70, y + 8)
-            c.drawString(70, y, f"Subtotal:")
-            c.drawRightString(w - 70, y, f"R {subtotal:.2f}")
-            y -= 16
-            c.drawString(70, y, f"Tax:")
-            c.drawRightString(w - 70, y, f"R {tax:.2f}")
-            y -= 16
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(70, y, f"TOTAL:")
-            c.drawRightString(w - 70, y, f"R {total:.2f}")
-
-    # ---- Footer ----
-    c.setFont("Helvetica", 8)
-    c.drawString(50, 30, f"Generated by PanelPro Cutting Optimizer | {payload.get('generated_at', '')}")
-
-    c.save()
-    buf.seek(0)
-    return buf.read()
-
-
-def _report_reportlab(
-    request, layouts, optimization, edging, boq,
-    stickers, stock_impact, report_id,
-) -> bytes:
-    """Generate report from typed Pydantic models."""
-    # Convert to dict and use the dict-based generator
-    payload = {
-        "report_id": report_id,
-        "request_summary": {
-            "project_name": _safe_get(request, "project_name", "N/A"),
-            "customer_name": _safe_get(request, "customer_name", "N/A"),
-            "board_type": _safe_get(_safe_get(request, "board"), "board_type", ""),
-            "board_company": _safe_get(_safe_get(request, "board"), "company", ""),
-            "board_color": _safe_get(_safe_get(request, "board"), "color_name", ""),
-            "board_size": f"{_safe_get(_safe_get(request, 'board'), 'width_mm', 0):.0f} x {_safe_get(_safe_get(request, 'board'), 'length_mm', 0):.0f} mm",
-            "thickness_mm": _safe_get(_safe_get(request, "board"), "thickness_mm", 0),
-        },
-        "optimization": optimization.model_dump(mode="python") if hasattr(optimization, "model_dump") else optimization,
-        "edging": edging.model_dump(mode="python") if hasattr(edging, "model_dump") else edging,
-        "layouts": [l.model_dump(mode="python") if hasattr(l, "model_dump") else l for l in (layouts or [])],
-        "pricing": boq.pricing.model_dump(mode="python") if boq and hasattr(boq, "pricing") and boq.pricing and hasattr(boq.pricing, "model_dump") else {},
-        "boq": boq.model_dump(mode="python") if hasattr(boq, "model_dump") else boq,
-        "generated_at": "",
+    return {
+        "report_id":    _g(payload, "report_id", "N/A"),
+        "generated_at": _g(payload, "generated_at", datetime.utcnow().isoformat()),
+        "project":      rs.get("project_name") or _g(payload, "project_name", "N/A"),
+        "customer":     rs.get("customer_name") or _g(payload, "customer_name", "N/A"),
+        "board_type":   rs.get("board_type", ""),
+        "board_color":  rs.get("board_color", ""),
+        "board_company":rs.get("board_company", ""),
+        "board_size":   rs.get("board_size", ""),
+        "thickness_mm": rs.get("thickness_mm", ""),
+        "kerf":         rs.get("kerf", 3),
+        "opt":          opt,
+        "layouts":      clean_layouts,
+        "edging":       edging,
+        "pricing":      pricing,
+        "stickers":     stickers,
     }
-    return _report_reportlab_dict(payload)
 
 
-def _report_fallback(request, optimization, edging, report_id) -> bytes:
-    lines = "\n".join([
-        "PanelPro Cutting Report",
-        "=" * 40,
-        f"Report: {report_id}",
-        f"Project: {_safe_get(request, 'project_name', 'N/A')}",
-        f"Customer: {_safe_get(request, 'customer_name', 'N/A')}",
-        "",
-        f"Boards: {_safe_get(optimization, 'total_boards', 0)}",
-        f"Panels: {_safe_get(optimization, 'total_panels', 0)}",
-        f"Efficiency: {_safe_get(optimization, 'overall_efficiency_percent', 0):.1f}%",
-        f"Edging: {_safe_get(edging, 'total_meters', 0):.2f} m",
-    ])
-    return _text_to_minimal_pdf(lines)
+# ================================================================== #
+#  REPORT PDF                                                         #
+# ================================================================== #
+def generate_report_pdf(payload: dict = None, **kw) -> bytes:
+    data = _normalize(payload or kw)
+    return _report_rl(data) if _RL else _report_txt(data)
 
 
-def _report_fallback_dict(payload: Dict[str, Any]) -> bytes:
-    summary = payload.get("request_summary", {})
-    optimization = payload.get("optimization", {})
-    edging = payload.get("edging", {})
-
-    lines = "\n".join([
-        "PanelPro Cutting Report",
-        "=" * 40,
-        f"Report: {payload.get('report_id', 'N/A')}",
-        f"Project: {summary.get('project_name', 'N/A')}",
-        f"Customer: {summary.get('customer_name', 'N/A')}",
-        "",
-        f"Boards: {optimization.get('total_boards', 0)}",
-        f"Panels: {optimization.get('total_panels', 0)}",
-        f"Efficiency: {optimization.get('overall_efficiency_percent', 0):.1f}%",
-        f"Waste: {optimization.get('total_waste_percent', 0):.1f}%",
-        f"Edging: {edging.get('total_meters', 0):.2f} m",
-        "",
-    ])
-
-    # Add layouts
-    for layout in payload.get("layouts", []):
-        bn = layout.get("board_number", 0) if isinstance(layout, dict) else getattr(layout, "board_number", 0)
-        eff = layout.get("efficiency_percent", 0) if isinstance(layout, dict) else getattr(layout, "efficiency_percent", 0)
-        lines += f"\nBoard #{bn} - {eff:.1f}% efficiency"
-        panels = layout.get("panels", []) if isinstance(layout, dict) else getattr(layout, "panels", [])
-        for p in panels:
-            if isinstance(p, dict):
-                lines += f"\n  {p.get('label', 'Panel')}: {p.get('width', 0):.0f}x{p.get('length', 0):.0f}mm"
-            else:
-                lines += f"\n  {getattr(p, 'label', 'Panel')}: {getattr(p, 'width', 0):.0f}x{getattr(p, 'length', 0):.0f}mm"
-
-    return _text_to_minimal_pdf(lines)
-
-
-# ------------------------------------------------------------------ #
-#  Labels PDF                                                         #
-# ------------------------------------------------------------------ #
-
-def generate_labels_pdf(
-    stickers=None,
-    *,
-    payload: Optional[Dict[str, Any]] = None,
-) -> bytes:
-    """
-    Generate labels PDF.
-    Can be called with stickers list OR payload=dict.
-    """
-    if payload is not None:
-        sticker_list = payload.get("stickers", [])
-        project = payload.get("request_summary", {}).get("project_name", "")
-        customer = payload.get("request_summary", {}).get("customer_name", "")
-    else:
-        sticker_list = stickers or []
-        project = ""
-        customer = ""
-
-    if _HAS_REPORTLAB:
-        return _labels_reportlab(sticker_list, project, customer)
-    return _labels_fallback(sticker_list)
-
-
-def _labels_reportlab(stickers, project: str = "", customer: str = "") -> bytes:
+def _report_rl(d: dict) -> bytes:
     buf = io.BytesIO()
     c = rl_canvas.Canvas(buf, pagesize=A4)
-    w, h = A4
+    W, H = A4
+    y = H - 50; pg = 1
 
-    label_w, label_h = 250, 95
-    margin_x, margin_y = 50, 60
-    col_gap, row_gap = 20, 12
-    cols = 2
-    x_positions = [margin_x, margin_x + label_w + col_gap]
+    def nl(n=60):
+        nonlocal y, pg
+        if y < n:
+            c.setFont("Helvetica",7); c.setFillGray(0.5)
+            c.drawString(50,20,f"PanelPro | Page {pg}")
+            c.setFillGray(0); c.showPage(); pg+=1; y=H-50
 
-    # ---- Header ----
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(50, h - 35, "PanelPro - Panel Labels")
-    c.setFont("Helvetica", 10)
-    header_text = ""
-    if project:
-        header_text += f"Project: {project}"
-    if customer:
-        header_text += f"  |  Customer: {customer}"
-    if header_text:
-        c.drawString(50, h - 52, header_text)
+    # ---- title ----
+    c.setFont("Helvetica-Bold",20); c.drawString(50,y,"PanelPro Cutting Report")
+    y-=8; c.setLineWidth(2); c.line(50,y,W-50,y); y-=25
 
-    row = 0
-    col = 0
+    # ---- info ----
+    for lbl,val in [
+        ("Report ID:", d["report_id"]),
+        ("Project:",   d["project"]),
+        ("Customer:",  d["customer"]),
+        ("Date:",      d["generated_at"][:10]),
+        ("",""),
+        ("Board:",     f"{d['board_type']} - {d['board_color']} ({d['board_company']})"),
+        ("Board Size:",d["board_size"]),
+        ("Thickness:", f"{d['thickness_mm']} mm"),
+        ("Kerf:",      f"{d['kerf']} mm"),
+    ]:
+        if lbl:
+            c.setFont("Helvetica-Bold",10); c.drawString(50,y,lbl)
+            c.setFont("Helvetica",10); c.drawString(160,y,str(val))
+        y-=15
 
-    for idx, sticker in enumerate(stickers):
-        x = x_positions[col]
-        y = h - margin_y - 20 - (row + 1) * (label_h + row_gap) + label_h
+    # ---- summary ----
+    o = d["opt"]; y-=10; nl(140)
+    c.setFont("Helvetica-Bold",14); c.drawString(50,y,"Optimization Summary")
+    y-=5; c.setLineWidth(.5); c.line(50,y,W-50,y); y-=18
+    for lbl,val in [
+        ("Total Boards:", o.get("total_boards",0)),
+        ("Total Panels:", o.get("total_panels",0)),
+        ("Efficiency:",   f"{o.get('overall_efficiency_percent',0):.1f}%"),
+        ("Waste:",        f"{o.get('total_waste_percent',0):.1f}%"),
+        ("Edging:",       f"{d['edging'].get('total_meters',0):.2f} m"),
+        ("Cuts:",         o.get("total_cuts",0)),
+    ]:
+        c.setFont("Helvetica-Bold",10); c.drawString(50,y,str(lbl))
+        c.setFont("Helvetica",10); c.drawString(170,y,str(val))
+        y-=15
 
-        if y < margin_y:
-            c.showPage()
-            row = 0
-            y = h - margin_y - 20 - (row + 1) * (label_h + row_gap) + label_h
+    # warnings
+    for w in o.get("warnings",[]):
+        nl(); c.setFont("Helvetica-Oblique",9)
+        c.setFillColorRGB(.8,.2,0); c.drawString(50,y,f"⚠ {w}"); c.setFillGray(0); y-=13
 
-        # Get values (handle both dict and model)
-        if isinstance(sticker, dict):
-            serial = sticker.get("serial_number", "")
-            panel_label = sticker.get("panel_label", "Panel")
-            sw = sticker.get("width", 0)
-            sl = sticker.get("length", 0)
-            board_num = sticker.get("board_number", 0)
-            sx = sticker.get("x", 0)
-            sy = sticker.get("y", 0)
-            rotated = sticker.get("rotated", False)
-            board_type = sticker.get("board_type", "")
-            color_name = sticker.get("color_name", "")
-            thickness = sticker.get("thickness_mm", "")
-            notes = sticker.get("notes")
-            qr_url = sticker.get("qr_url", "")
-        else:
-            serial = getattr(sticker, "serial_number", "")
-            panel_label = getattr(sticker, "panel_label", "Panel")
-            sw = getattr(sticker, "width", 0)
-            sl = getattr(sticker, "length", 0)
-            board_num = getattr(sticker, "board_number", 0)
-            sx = getattr(sticker, "x", 0)
-            sy = getattr(sticker, "y", 0)
-            rotated = getattr(sticker, "rotated", False)
-            board_type = getattr(sticker, "board_type", "")
-            color_name = getattr(sticker, "color_name", "")
-            thickness = getattr(sticker, "thickness_mm", "")
-            notes = getattr(sticker, "notes", None)
-            qr_url = getattr(sticker, "qr_url", "")
+    # impossible
+    imp = o.get("impossible_panels",[])
+    if imp:
+        y-=5; c.setFont("Helvetica-Bold",10); c.setFillColorRGB(.8,0,0)
+        c.drawString(50,y,"Could not place:"); y-=14; c.setFont("Helvetica",9)
+        for p in imp: nl(); c.drawString(70,y,f"• {p}"); y-=12
+        c.setFillGray(0)
 
-        # ---- Draw label box ----
-        c.setStrokeColorRGB(0.2, 0.2, 0.2)
-        c.setLineWidth(0.8)
-        c.roundRect(x, y - label_h, label_w, label_h, 4)
+    # ---- boards ----
+    y-=15
+    for lay in d["layouts"]:
+        nl(130)
+        mat = lay.get("material",{})
+        bn = lay.get("board_number",0)
+        bw = lay.get("board_width",0); bl_ = lay.get("board_length",0)
+        pc = lay.get("panel_count",0); eff = lay.get("efficiency_percent",0)
+        waste = lay.get("waste_area_mm2",0); used = lay.get("used_area_mm2",0)
 
-        # ---- Header bar ----
-        c.setFillColorRGB(0.15, 0.15, 0.15)
-        c.rect(x, y - 16, label_w, 16, fill=True)
-        c.setFillColorRGB(1, 1, 1)
-        c.setFont("Helvetica-Bold", 9)
-        c.drawString(x + 6, y - 12, f"{panel_label}")
-        c.drawRightString(x + label_w - 6, y - 12, f"Board #{board_num}")
+        c.setFillGray(.92); c.rect(50,y-4,W-100,18,fill=1,stroke=0); c.setFillGray(0)
+        c.setFont("Helvetica-Bold",11); c.drawString(55,y,f"Board #{bn}")
+        c.setFont("Helvetica",10)
+        c.drawString(130,y,f"{bw:.0f}×{bl_:.0f}mm | {mat.get('board_type',d['board_type'])} {mat.get('color_name',d['board_color'])}")
+        y-=18; c.setFont("Helvetica",9)
+        c.drawString(70,y,f"Panels:{pc}  Eff:{eff:.1f}%  Used:{used:.0f}mm²  Waste:{waste:.0f}mm²")
+        y-=16
 
-        # ---- Body ----
-        c.setFillColorRGB(0, 0, 0)
-        inner_y = y - 30
+        panels = lay.get("panels",[])
+        if panels:
+            c.setFont("Helvetica-Bold",8)
+            c.drawString(70,y,"Panel"); c.drawString(210,y,"Size")
+            c.drawString(310,y,"Position"); c.drawString(400,y,"Rot"); c.drawString(440,y,"Grain")
+            y-=3; c.setLineWidth(.3); c.line(70,y,W-70,y); y-=11
+            c.setFont("Helvetica",8)
+            for p in panels:
+                nl(35)
+                ga = p.get("grain_aligned","none")
+                if hasattr(ga,"value"): ga=ga.value
+                c.drawString(70,y,str(p.get("label",""))[:22])
+                c.drawString(210,y,f"{p.get('width',0):.0f}×{p.get('length',0):.0f}")
+                c.drawString(310,y,f"({p.get('x',0):.0f},{p.get('y',0):.0f})")
+                c.drawString(400,y,"Y" if p.get("rotated") else "N")
+                c.drawString(440,y,str(ga))
+                y-=12
+        y-=10
 
-        c.setFont("Helvetica", 8)
-        c.drawString(x + 6, inner_y, f"Size: {sw:.0f} x {sl:.0f} mm")
-        rot_text = "Yes" if rotated else "No"
-        c.drawRightString(x + label_w - 6, inner_y, f"Rotated: {rot_text}")
-        inner_y -= 11
+    # ---- edging ----
+    ed = d["edging"].get("details",[])
+    if ed:
+        nl(100); y-=5
+        c.setFont("Helvetica-Bold",13); c.drawString(50,y,"Edging Details")
+        y-=5; c.line(50,y,W-50,y); y-=16
+        c.setFont("Helvetica-Bold",8)
+        c.drawString(50,y,"Panel"); c.drawString(210,y,"Qty")
+        c.drawString(260,y,"Per pc (m)"); c.drawString(350,y,"Total (m)"); c.drawString(430,y,"Edges")
+        y-=3; c.line(50,y,W-50,y); y-=11; c.setFont("Helvetica",8)
+        for e in ed:
+            nl()
+            c.drawString(50,y,str(e.get("panel_label",""))[:22])
+            c.drawString(210,y,str(e.get("quantity",0)))
+            c.drawString(260,y,f"{e.get('edge_per_panel_m',0):.3f}")
+            c.drawString(350,y,f"{e.get('total_edge_m',0):.3f}")
+            c.drawString(430,y,str(e.get("edges_applied","")))
+            y-=12
+        y-=5; c.setFont("Helvetica-Bold",10)
+        c.drawString(50,y,f"Total Edging: {d['edging'].get('total_meters',0):.2f} m"); y-=15
 
-        c.drawString(x + 6, inner_y, f"Position: ({sx:.0f}, {sy:.0f})")
-        inner_y -= 11
+    # ---- pricing ----
+    pl = d["pricing"].get("lines",[])
+    if pl:
+        nl(120); y-=10
+        c.setFont("Helvetica-Bold",13); c.drawString(50,y,"Pricing"); y-=5
+        c.line(50,y,W-50,y); y-=18; c.setFont("Helvetica",10)
+        for ln in pl:
+            nl()
+            c.drawString(50,y,ln.get("item",""))
+            c.setFont("Helvetica",9); c.drawString(130,y,ln.get("description",""))
+            c.drawRightString(W-50,y,f"R {ln.get('amount',0):.2f}")
+            c.setFont("Helvetica",10); y-=16
+        y-=4; c.line(50,y+8,W-50,y+8)
+        for lbl,key in [("Subtotal","subtotal"),("Tax","tax")]:
+            c.drawString(50,y,f"{lbl}:"); c.drawRightString(W-50,y,f"R {d['pricing'].get(key,0):.2f}"); y-=16
+        c.setFont("Helvetica-Bold",12)
+        c.drawString(50,y,"TOTAL:"); c.drawRightString(W-50,y,f"R {d['pricing'].get('total',0):.2f}")
 
-        c.drawString(x + 6, inner_y, f"Material: {board_type} {color_name} {thickness}mm")
-        inner_y -= 11
-
-        c.setFont("Helvetica-Bold", 7)
-        c.drawString(x + 6, inner_y, f"SN: {serial}")
-        inner_y -= 10
-
-        if notes:
-            c.setFont("Helvetica-Oblique", 7)
-            c.drawString(x + 6, inner_y, f"Notes: {notes[:40]}")
-
-        col += 1
-        if col >= cols:
-            col = 0
-            row += 1
-
-    c.save()
-    buf.seek(0)
-    return buf.read()
-
-
-def _labels_fallback(stickers) -> bytes:
-    lines = ["PANEL LABELS", "=" * 40, ""]
-    for s in stickers:
-        if isinstance(s, dict):
-            lines.append(f"SN: {s.get('serial_number', '')}")
-            lines.append(f"  Panel: {s.get('panel_label', '')}")
-            lines.append(f"  Size: {s.get('width', 0):.0f} x {s.get('length', 0):.0f} mm")
-            lines.append(f"  Board #{s.get('board_number', 0)}")
-            lines.append(f"  Material: {s.get('board_type', '')} {s.get('color_name', '')}")
-        else:
-            lines.append(f"SN: {getattr(s, 'serial_number', '')}")
-            lines.append(f"  Panel: {getattr(s, 'panel_label', '')}")
-            lines.append(f"  Size: {getattr(s, 'width', 0):.0f} x {getattr(s, 'length', 0):.0f} mm")
-            lines.append(f"  Board #{getattr(s, 'board_number', 0)}")
-            lines.append(f"  Material: {getattr(s, 'board_type', '')} {getattr(s, 'color_name', '')}")
-        lines.append("")
-    return _text_to_minimal_pdf("\n".join(lines))
+    # footer
+    c.setFont("Helvetica",7); c.setFillGray(.5)
+    c.drawString(50,20,f"PanelPro | {d['generated_at'][:10]} | Page {pg}")
+    c.save(); buf.seek(0); return buf.read()
 
 
-# ------------------------------------------------------------------ #
-#  Minimal PDF builder (no reportlab)                                 #
-# ------------------------------------------------------------------ #
-
-def _text_to_minimal_pdf(text: str) -> bytes:
-    text_lines = text.split("\n")
-    stream_parts = ["BT", "/F1 11 Tf", "50 750 Td"]
-    for line in text_lines:
-        safe = (
-            line.replace("\\", "\\\\")
-            .replace("(", "\\(")
-            .replace(")", "\\)")
-        )
-        stream_parts.append(f"({safe}) Tj")
-        stream_parts.append("0 -16 Td")
-    stream_parts.append("ET")
-    stream = "\n".join(stream_parts)
-
-    objects = [
-        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj",
-        "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj",
-        (
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R "
-            "/MediaBox [0 0 612 792] /Contents 4 0 R "
-            "/Resources << /Font << /F1 5 0 R >> >> >>\nendobj"
-        ),
-        f"4 0 obj\n<< /Length {len(stream)} >>\nstream\n{stream}\nendstream\nendobj",
-        "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj",
+def _report_txt(d):
+    lines = [
+        "PANELPRO CUTTING REPORT","="*50,
+        f"Report: {d['report_id']}",f"Project: {d['project']}",
+        f"Customer: {d['customer']}",f"Board: {d['board_type']} {d['board_color']}",
+        f"Size: {d['board_size']}","",
+        f"Boards: {d['opt'].get('total_boards',0)}",
+        f"Panels: {d['opt'].get('total_panels',0)}",
+        f"Eff: {d['opt'].get('overall_efficiency_percent',0):.1f}%","",
     ]
+    for lay in d["layouts"]:
+        lines.append(f"Board #{lay.get('board_number',0)} - {lay.get('efficiency_percent',0):.1f}%")
+        for p in lay.get("panels",[]):
+            lines.append(f"  {p.get('label','')}: {p.get('width',0):.0f}x{p.get('length',0):.0f}")
+        lines.append("")
+    for ln in d["pricing"].get("lines",[]):
+        lines.append(f"  {ln.get('item','')}: R{ln.get('amount',0):.2f}")
+    if d["pricing"].get("total"):
+        lines.append(f"  TOTAL: R{d['pricing']['total']:.2f}")
+    return _txt_pdf("\n".join(lines))
 
-    body = "\n".join(objects)
-    xref_offset = len("%PDF-1.4\n") + len(body) + 1
-    pdf = (
-        "%PDF-1.4\n"
-        + body
-        + "\nxref\n0 6\n"
-        + "trailer\n<< /Size 6 /Root 1 0 R >>\n"
-        + f"startxref\n{xref_offset}\n%%EOF"
-    )
-    return pdf.encode("latin-1")
+
+# ================================================================== #
+#  LABELS PDF                                                         #
+# ================================================================== #
+def generate_labels_pdf(payload: dict = None, stickers: list = None, **kw) -> bytes:
+    data = _normalize(payload or kw) if payload else {"stickers": stickers or [], "project":"","customer":""}
+    sl = data.get("stickers", stickers or [])
+    sl = [_to_dict(s) if not isinstance(s,dict) else s for s in sl]
+    proj = data.get("project",""); cust = data.get("customer","")
+    return _labels_rl(sl,proj,cust) if _RL else _labels_txt(sl)
+
+
+def _labels_rl(stickers, project, customer):
+    buf = io.BytesIO(); c = rl_canvas.Canvas(buf, pagesize=A4)
+    W,H = A4; LW=245; LH=100; MX=50; MY=70; CG=20; RG=12
+
+    c.setFont("Helvetica-Bold",16); c.drawString(50,H-35,"PanelPro — Panel Labels")
+    c.setFont("Helvetica",9)
+    hdr = [f"Labels: {len(stickers)}"]
+    if project: hdr.insert(0,f"Project: {project}")
+    if customer: hdr.insert(1,f"Customer: {customer}")
+    c.drawString(50,H-50," | ".join(hdr))
+
+    row=col=0; pg=1
+    for s in stickers:
+        x = MX + col*(LW+CG)
+        yt = H - MY - row*(LH+RG); yb = yt-LH
+        if yb < 35:
+            c.showPage(); pg+=1; row=0; col=0
+            x = MX; yt=H-MY; yb=yt-LH
+
+        c.setStrokeGray(.3); c.setLineWidth(.8); c.roundRect(x,yb,LW,LH,3)
+        # header bar
+        c.setFillGray(.15); c.rect(x,yt-16,LW,16,fill=1,stroke=0)
+        c.setFillColorRGB(1,1,1); c.setFont("Helvetica-Bold",9)
+        c.drawString(x+5,yt-12,str(s.get("panel_label",""))[:20])
+        c.setFont("Helvetica",8)
+        c.drawRightString(x+LW-5,yt-12,f"Board #{s.get('board_number',0)}")
+        c.setFillGray(0)
+
+        ty = yt-30; c.setFont("Helvetica",8)
+        c.drawString(x+5,ty,f"Size: {s.get('width',0):.0f} × {s.get('length',0):.0f} mm")
+        c.drawRightString(x+LW-5,ty,f"Rot: {'Y' if s.get('rotated') else 'N'}"); ty-=11
+        c.drawString(x+5,ty,f"Pos: ({s.get('x',0):.0f}, {s.get('y',0):.0f})"); ty-=11
+        mat = f"{s.get('board_type','')} {s.get('color_name','')}".strip()
+        if s.get("thickness_mm"): mat += f" {s['thickness_mm']}mm"
+        c.drawString(x+5,ty,f"Mat: {mat}"); ty-=11
+        c.setFont("Helvetica-Bold",7)
+        c.drawString(x+5,ty,f"SN: {s.get('serial_number','')}"); ty-=10
+        if s.get("notes"):
+            c.setFont("Helvetica-Oblique",7); c.drawString(x+5,ty,f"Notes: {str(s['notes'])[:35]}")
+
+        col+=1
+        if col>=2: col=0; row+=1
+
+    c.setFont("Helvetica",7); c.setFillGray(.5)
+    c.drawString(50,20,f"PanelPro | {len(stickers)} labels | Page {pg}")
+    c.save(); buf.seek(0); return buf.read()
+
+
+def _labels_txt(stickers):
+    lines = ["PANEL LABELS","="*50,""]
+    for i,s in enumerate(stickers,1):
+        lines += [f"#{i} {s.get('panel_label','')}",
+                  f"  SN: {s.get('serial_number','')}",
+                  f"  Size: {s.get('width',0):.0f}x{s.get('length',0):.0f}mm",
+                  f"  Board #{s.get('board_number',0)}",
+                  f"  {s.get('board_type','')} {s.get('color_name','')}",""]
+    return _txt_pdf("\n".join(lines))
+
+
+# ================================================================== #
+#  Minimal text PDF                                                   #
+# ================================================================== #
+def _txt_pdf(text: str) -> bytes:
+    parts = ["BT","/F1 10 Tf","50 740 Td"]
+    for line in text.split("\n"):
+        safe = line.replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
+        parts += [f"({safe}) Tj","0 -14 Td"]
+    parts.append("ET"); stream = "\n".join(parts)
+    objs = [
+        "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
+        "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
+        f"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj",
+        f"4 0 obj<</Length {len(stream)}>>stream\n{stream}\nendstream\nendobj",
+        "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj",
+    ]
+    body = "\n".join(objs); xref = len("%PDF-1.4\n")+len(body)+1
+    return (f"%PDF-1.4\n{body}\nxref\n0 6\ntrailer<</Size 6/Root 1 0 R>>\nstartxref\n{xref}\n%%EOF").encode("latin-1")
