@@ -52,8 +52,6 @@ logger = logging.getLogger("panelpro")
 # FastAPI App
 # ─────────────────────────────────────────────
 app = FastAPI(title="PanelPro - Cutting Optimizer")
-
-# Create database tables
 Base.metadata.create_all(bind=engine)
 
 # ─────────────────────────────────────────────
@@ -63,7 +61,7 @@ if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ─────────────────────────────────────────────
-# ✅ CORS (SAFE FOR TEST + RENDER)
+# CORS
 # ─────────────────────────────────────────────
 origins = [
     "http://localhost:5173",
@@ -89,8 +87,9 @@ logger.info(f"CORS enabled for: {origins}")
 app.include_router(board_router, prefix="/api")
 app.include_router(job_router, prefix="/api")
 
+
 # ─────────────────────────────────────────────
-# Validation Error Handler
+# Error Handler
 # ─────────────────────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -98,7 +97,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # ─────────────────────────────────────────────
-# Health Check
+# Health
 # ─────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse)
 async def health():
@@ -106,29 +105,9 @@ async def health():
 
 
 # ─────────────────────────────────────────────
-# Public Board Catalog
+# ✅ REMOVED duplicate /api/boards/catalog
+# It now lives in stock_routes.py
 # ─────────────────────────────────────────────
-@app.get("/api/boards/catalog")
-async def boards_catalog(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    items = db.query(BoardItem).filter(BoardItem.is_active.is_(True)).all()
-    return {
-        "items": [
-            {
-                "id": i.id,
-                "board_type": i.board_type,
-                "thickness_mm": i.thickness_mm,
-                "color_name": i.color_name,
-                "company": i.company,
-                "width_mm": i.width_mm,
-                "length_mm": i.length_mm,
-                "price_per_board": i.price_per_board,
-                "quantity": i.quantity,
-                "low_stock_threshold": i.low_stock_threshold,
-                "is_active": i.is_active,
-            }
-            for i in items
-        ]
-    }
 
 
 # ─────────────────────────────────────────────
@@ -153,7 +132,7 @@ def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSumm
             BOQItem(
                 item_no=idx,
                 description=p.label or f"Panel {idx}",
-                size=f"{p.width}×{p.length} mm",
+                size=f"{p.width}x{p.length} mm",
                 quantity=p.quantity,
                 unit="pcs",
                 edges=edges,
@@ -177,14 +156,13 @@ def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSumm
 
 
 # ─────────────────────────────────────────────
-# Optimize Endpoint
+# Optimize
 # ─────────────────────────────────────────────
 @app.post("/api/optimize", response_model=CuttingResponse)
 async def api_optimize(
     req: CuttingRequest,
     db: Session = Depends(get_db),
 ) -> CuttingResponse:
-
     boards, optimization, edging_summary, stickers = run_optimization(req)
 
     pricing = calculate_pricing(req, optimization, edging_summary.total_meters)
@@ -221,7 +199,7 @@ async def api_optimize(
 
 
 # ─────────────────────────────────────────────
-# Export Full Report PDF
+# PDF Export
 # ─────────────────────────────────────────────
 @app.post("/api/optimize/report")
 async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
@@ -247,9 +225,6 @@ async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     )
 
 
-# ─────────────────────────────────────────────
-# Export Sticker Labels PDF
-# ─────────────────────────────────────────────
 @app.post("/api/optimize/labels")
 async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
     boards, optimization, edging_summary, stickers = run_optimization(req)
@@ -264,7 +239,7 @@ async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────
-# Tracking (No API Key Required)
+# Tracking (No API Key)
 # ─────────────────────────────────────────────
 @app.get("/api/tracking/{serial_number}", response_model=StickerTrackingResponse)
 async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
