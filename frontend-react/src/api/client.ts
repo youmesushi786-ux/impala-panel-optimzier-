@@ -12,6 +12,9 @@ import type {
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL || 'https://impala-panel-optimzier-v1.onrender.com';
 
+// ─────────────────────────────────────────────
+// Core request helper
+// ─────────────────────────────────────────────
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -34,14 +37,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json();
 }
 
+// ─────────────────────────────────────────────
+// Admin headers (optional, for future use)
+// ─────────────────────────────────────────────
 function getAdminHeaders(adminApiKey?: string): HeadersInit {
   const trimmed = adminApiKey?.trim();
   if (!trimmed) return {};
-  return {
-    'x-api-key': trimmed,
-  };
+  return { 'x-api-key': trimmed };
 }
 
+// ─────────────────────────────────────────────
+// Edge normalization
+// ─────────────────────────────────────────────
 function normalizeEdges(edges?: PanelEdges) {
   return {
     top: !!edges?.top,
@@ -51,6 +58,9 @@ function normalizeEdges(edges?: PanelEdges) {
   };
 }
 
+// ─────────────────────────────────────────────
+// Optimize payload builder
+// ─────────────────────────────────────────────
 function normalizeOptimizePayload(payload: BackendCuttingRequest) {
   const primaryBoard =
     payload.board ||
@@ -106,16 +116,22 @@ function normalizeOptimizePayload(payload: BackendCuttingRequest) {
   };
 }
 
+// ─────────────────────────────────────────────
+// ✅ ALL API CALLS — FIXED ROUTES
+// ─────────────────────────────────────────────
 export const api = {
+  // ── Health ──────────────────────────────────
   checkHealth: () =>
-    request<{ status: string; timestamp?: string; version?: string }>('/health'),
+    request<{ status: string; timestamp?: string }>('/health'),
 
+  // ── Optimization ────────────────────────────
   optimize: (payload: BackendCuttingRequest) =>
     request<any>('/api/optimize', {
       method: 'POST',
       body: JSON.stringify(normalizeOptimizePayload(payload)),
     }),
 
+  // ── PDF Exports ─────────────────────────────
   exportReportPdf: async (payload: BackendCuttingRequest): Promise<Blob> => {
     const response = await fetch(`${API_BASE}/api/optimize/report`, {
       method: 'POST',
@@ -136,37 +152,70 @@ export const api = {
     return response.blob();
   },
 
-  getBoardCatalog: (): Promise<BoardCatalog> => request('/api/boards/catalog'),
+  // ── Board Catalog (public) ──────────────────
+  // ✅ FIXED: was /api/boards/catalog → now /api/boards/catalog
+  getBoardCatalog: async (): Promise<BoardCatalog> =>
+    request('/api/boards/catalog'),
 
-  getBoardItems: (): Promise<BoardItem[]> => request('/api/boards-admin/'),
-
-  createBoardItem: (payload: Omit<BoardItem, 'id'>): Promise<BoardItem> =>
-    request('/api/boards-admin/', { method: 'POST', body: JSON.stringify(payload) }),
-
-  updateBoardItem: (id: number, payload: Partial<BoardItem>): Promise<BoardItem> =>
-    request(`/api/boards-admin/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
-
-  deleteBoardItem: (id: number): Promise<void> =>
-    request(`/api/boards-admin/${id}`, { method: 'DELETE' }),
-
-  addBoardStock: (payload: StockAdjustmentRequest): Promise<BoardItem> =>
-    request('/api/boards-admin/add', { method: 'POST', body: JSON.stringify(payload) }),
-
-  deductBoardStock: (payload: StockAdjustmentRequest): Promise<BoardItem> =>
-    request('/api/boards-admin/deduct', { method: 'POST', body: JSON.stringify(payload) }),
-
-  getBoardTransactions: (boardItemId: number): Promise<StockTransaction[]> =>
-    request(`/api/boards-admin/transactions/${boardItemId}`),
-
-  openInventoryPdf: () => {
-    window.open(`${API_BASE}/api/boards-admin/print-pdf`, '_blank');
+  // ── Board Admin CRUD ────────────────────────
+  // ✅ FIXED: was /api/boards-admin/ → now /api/boards
+  getBoardItems: async (): Promise<BoardItem[]> => {
+    const data = await request<{ items: BoardItem[] }>('/api/boards');
+    return data.items || [];
   },
 
-  getJob: (reportId: string): Promise<any> => request(`/api/jobs/${reportId}`),
+  // ✅ FIXED: was /api/boards-admin/ POST → now /api/boards POST
+  createBoardItem: (payload: Omit<BoardItem, 'id'>): Promise<BoardItem> =>
+    request('/api/boards', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // ✅ FIXED: was PATCH /api/boards-admin/${id} → now PUT /api/boards/${id}
+  updateBoardItem: (id: number, payload: Partial<BoardItem>): Promise<BoardItem> =>
+    request(`/api/boards/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  // ✅ FIXED: was /api/boards-admin/${id} → now /api/boards/${id}
+  deleteBoardItem: (id: number): Promise<void> =>
+    request(`/api/boards/${id}`, { method: 'DELETE' }),
+
+  // ── Stock Adjustments ───────────────────────
+  // ✅ FIXED: was /api/boards-admin/add → now /api/boards/add-stock
+  addBoardStock: (payload: StockAdjustmentRequest): Promise<BoardItem> =>
+    request('/api/boards/add-stock', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // ✅ FIXED: was /api/boards-admin/deduct → now /api/boards/deduct-stock
+  deductBoardStock: (payload: StockAdjustmentRequest): Promise<BoardItem> =>
+    request('/api/boards/deduct-stock', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // ── Transactions ────────────────────────────
+  // ✅ FIXED: was /api/boards-admin/transactions/${id}
+  getBoardTransactions: (boardItemId: number): Promise<StockTransaction[]> =>
+    request(`/api/boards/transactions/${boardItemId}`),
+
+  // ── Inventory PDF ───────────────────────────
+  // ✅ FIXED: was /api/boards-admin/print-pdf
+  openInventoryPdf: () => {
+    window.open(`${API_BASE}/api/boards/print-pdf`, '_blank');
+  },
+
+  // ── Jobs ────────────────────────────────────
+  getJob: (reportId: string): Promise<any> =>
+    request(`/api/jobs/${reportId}`),
 
   confirmJob: (reportId: string): Promise<JobConfirmResponse> =>
     request(`/api/jobs/confirm/${reportId}`, { method: 'POST' }),
 
+  // ── Tracking ────────────────────────────────
   getTracking: (serialNumber: string): Promise<StickerTrackingResponse> =>
     request(`/api/tracking/${encodeURIComponent(serialNumber)}`),
 
