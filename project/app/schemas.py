@@ -6,11 +6,19 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# ─────────────────────────────────────────────
+# Enums
+# ─────────────────────────────────────────────
+
 class GrainAlignment(str, Enum):
     none = "none"
     horizontal = "horizontal"
     vertical = "vertical"
 
+
+# ─────────────────────────────────────────────
+# Basic Specs
+# ─────────────────────────────────────────────
 
 class EdgeSpec(BaseModel):
     top: bool = False
@@ -48,17 +56,21 @@ class PanelSpec(BaseModel):
 
     @property
     def edge_length_mm(self) -> float:
-        t = 0.0
-        if self.edging.top:    t += self.width
-        if self.edging.bottom: t += self.width
-        if self.edging.left:   t += self.length
-        if self.edging.right:  t += self.length
-        return t
+        total = 0.0
+        if self.edging.top:    total += self.width
+        if self.edging.bottom: total += self.width
+        if self.edging.left:   total += self.length
+        if self.edging.right:  total += self.length
+        return total
 
     @property
     def total_edge_length_mm(self) -> float:
         return self.edge_length_mm * self.quantity
 
+
+# ─────────────────────────────────────────────
+# Request
+# ─────────────────────────────────────────────
 
 class CuttingRequest(BaseModel):
     project_name: str = "Untitled Project"
@@ -67,6 +79,10 @@ class CuttingRequest(BaseModel):
     panels: List[PanelSpec] = Field(default_factory=list)
     options: Optional[Options] = None
 
+
+# ─────────────────────────────────────────────
+# Layout Models
+# ─────────────────────────────────────────────
 
 class PlacedPanel(BaseModel):
     panel_index: int = 0
@@ -112,6 +128,10 @@ class BoardLayout(BaseModel):
     cuts: List[CutSegment] = Field(default_factory=list)
 
 
+# ─────────────────────────────────────────────
+# Edging
+# ─────────────────────────────────────────────
+
 class EdgingDetail(BaseModel):
     panel_label: str = ""
     quantity: int = 0
@@ -124,6 +144,10 @@ class EdgingSummary(BaseModel):
     total_meters: float = 0.0
     details: List[EdgingDetail] = Field(default_factory=list)
 
+
+# ─────────────────────────────────────────────
+# Optimization Summary
+# ─────────────────────────────────────────────
 
 class OptimizationSummary(BaseModel):
     total_boards: int = 0
@@ -145,24 +169,9 @@ class OptimizationSummary(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
-class StickerLabel(BaseModel):
-    serial_number: str = ""
-    panel_label: str = ""
-    width: float = 0.0
-    length: float = 0.0
-    board_number: int = 0
-    x: float = 0.0
-    y: float = 0.0
-    rotated: bool = False
-    project_name: str = ""
-    customer_name: str = ""
-    board_type: str = ""
-    thickness_mm: float = 0.0
-    company: str = ""
-    color_name: str = ""
-    notes: Optional[str] = None
-    qr_url: str = ""
-
+# ─────────────────────────────────────────────
+# Pricing
+# ─────────────────────────────────────────────
 
 class PricingLine(BaseModel):
     item: str = ""
@@ -178,6 +187,10 @@ class PricingSummary(BaseModel):
     tax: float = 0.0
     total: float = 0.0
 
+
+# ─────────────────────────────────────────────
+# BOQ
+# ─────────────────────────────────────────────
 
 class BOQItem(BaseModel):
     item_no: int = 0
@@ -203,6 +216,10 @@ class BOQSummary(BaseModel):
     pricing: Optional[PricingSummary] = None
 
 
+# ─────────────────────────────────────────────
+# Stock Impact
+# ─────────────────────────────────────────────
+
 class StockImpactItem(BaseModel):
     board_item_id: Optional[int] = None
     board_type: str = ""
@@ -218,10 +235,18 @@ class StockImpactItem(BaseModel):
     sufficient: bool = False
 
 
+# ─────────────────────────────────────────────
+# ✅ FIXED HEALTH RESPONSE
+# ─────────────────────────────────────────────
+
 class HealthResponse(BaseModel):
     status: str = "healthy"
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
+
+# ─────────────────────────────────────────────
+# Tracking
+# ─────────────────────────────────────────────
 
 class StickerTrackingResponse(BaseModel):
     serial_number: str = ""
@@ -229,13 +254,17 @@ class StickerTrackingResponse(BaseModel):
     panel_label: Optional[str] = None
     status: str = "in_store"
     qr_url: Optional[str] = None
-    updated_at: Optional[str] = None
+    updated_at: Optional[datetime] = None
     board_number: Optional[int] = None
 
 
+# ─────────────────────────────────────────────
+# Full Response
+# ─────────────────────────────────────────────
+
 class CuttingResponse(BaseModel):
     report_id: str = ""
-    generated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
     request_summary: Dict[str, Any] = Field(default_factory=dict)
     optimization: OptimizationSummary = Field(default_factory=OptimizationSummary)
     layouts: List[BoardLayout] = Field(default_factory=list)
