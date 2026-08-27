@@ -7,171 +7,95 @@ import TrackingPage from './pages/TrackingPage';
 import { ToastContainer, ToastProps } from './components/ui/Toast';
 import { api } from './api/client';
 import { mapToCuttingRequest } from './utils/mapToCuttingRequest';
+import type { Panel, OptimizationOptions, CustomerDetails, CuttingResponse } from './types';
 
-import type {
-  Panel,
-  OptimizationOptions,
-  CustomerDetails,
-  CuttingResponse,
-  BackendCuttingRequest,
-} from './types';
-
-type ViewMode = 'main' | 'admin-stock';
-
-function App() {
+export default function App() {
   const [hash, setHash] = useState(window.location.hash);
-
   useEffect(() => {
-    const onHashChange = () => setHash(window.location.hash);
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    const h = () => setHash(window.location.hash);
+    window.addEventListener('hashchange', h);
+    return () => window.removeEventListener('hashchange', h);
   }, []);
 
   const trackingSerial = useMemo(() => {
-    const match = hash.match(/^#\/track\/(.+)$/);
-    return match ? decodeURIComponent(match[1]) : null;
+    const m = hash.match(/^#\/track\/(.+)$/);
+    return m ? decodeURIComponent(m[1]) : null;
   }, [hash]);
 
-  const [viewMode, setViewMode] = useState<ViewMode>('main');
-  const [currentStep, setCurrentStep] = useState(1);
+  const [view, setView] = useState('optimize');
   const [panels, setPanels] = useState<Panel[]>([]);
-
-  const [options, setOptions] = useState<OptimizationOptions>({
-    kerf: 3,
-    labels_on_panels: true,
-    use_single_sheet: false,
-    consider_material: true,
-    edge_banding: true,
-    consider_grain: false,
-  });
-
-  const [customer, setCustomer] = useState<CustomerDetails>({
-    project_name: '',
-    customer_name: '',
-    notes: '',
-  });
-
   const [results, setResults] = useState<CuttingResponse | null>(null);
   const [toasts, setToasts] = useState<ToastProps[]>([]);
-  const [isOptimizing, setIsOptimizing] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
 
-  const addToast = (type: 'success' | 'error' | 'info', message: string) => {
+  const [options, setOptions] = useState<OptimizationOptions>({
+    kerf: 3, labels_on_panels: true, use_single_sheet: false,
+    consider_material: true, edge_banding: true, consider_grain: false,
+  });
+  const [customer, setCustomer] = useState<CustomerDetails>({ project_name: '', customer_name: '', notes: '' });
+
+  const addToast = (type: ToastProps['type'], message: string, title?: string) => {
     const id = Date.now().toString();
-    setToasts((prev) => [...prev, { id, type, message, onClose: () => removeToast(id) }]);
+    setToasts((t) => [...t, { id, type, message, title, onClose: () => removeToast(id) }]);
   };
-
-  const removeToast = (id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  const removeToast = (id: string) => setToasts((t) => t.filter((x) => x.id !== id));
 
   const handleOptimize = async () => {
-    if (panels.length === 0) {
-      addToast('error', 'Please add at least one panel before optimizing');
-      return;
-    }
-
-    if (!customer.project_name || !customer.customer_name) {
-      addToast('error', 'Please fill in project name and customer name');
-      return;
-    }
-
-    setIsOptimizing(true);
-
+    if (panels.length === 0) return addToast('error', 'Add at least one panel');
+    if (!customer.project_name || !customer.customer_name) return addToast('error', 'Fill project & customer name');
+    setOptimizing(true);
     try {
-      const payload: BackendCuttingRequest = mapToCuttingRequest({
-        panels,
-        options,
-        customer,
-      });
-
-      console.log('Optimization payload:', payload);
-
-      const response = await api.optimize(payload);
-      setResults(response);
-      setCurrentStep(2);
-      addToast('success', 'Optimization completed successfully!');
-    } catch (error) {
-      addToast('error', error instanceof Error ? error.message : 'Optimization failed');
-    } finally {
-      setIsOptimizing(false);
-    }
+      const payload = mapToCuttingRequest({ panels, options, customer });
+      const res = await api.optimize(payload);
+      setResults(res);
+      setView('results');
+      addToast('success', 'Optimization complete!', 'Success');
+    } catch (e: any) {
+      addToast('error', e.message || 'Optimization failed');
+    } finally { setOptimizing(false); }
   };
 
-  const handleStepChange = (step: number) => {
-    if (step === 2 && !results) {
-      addToast('info', 'Please complete optimization first');
-      return;
+  const requestData = panels.length > 0 ? mapToCuttingRequest({ panels, options, customer }) : null;
+
+  if (trackingSerial) return <TrackingPage serialNo={trackingSerial} />;
+
+  const renderView = () => {
+    switch (view) {
+      case 'results': return <StepResults results={results} requestData={requestData} onBack={() => setView('optimize')} />;
+      case 'stock': return <AdminStockPage onBack={() => setView('optimize')} />;
+      case 'tracking': return <div className="p-8 text-center text-slate-500">Scan a QR code or navigate to #/track/[serial]</div>;
+      default: return (
+        <StepPanels
+          panels={panels} onPanelsChange={setPanels}
+          options={options} onOptionsChange={setOptions}
+          customer={customer} onCustomerChange={setCustomer}
+          onNext={handleOptimize}
+          onOpenAdminStock={() => setView('stock')}
+        />
+      );
     }
-    setCurrentStep(step);
   };
-
-  const requestData: BackendCuttingRequest | null =
-    panels.length > 0
-      ? mapToCuttingRequest({
-          panels,
-          options,
-          customer,
-        })
-      : null;
-
-  if (trackingSerial) {
-    return <TrackingPage serialNo={trackingSerial} />;
-  }
-
-  if (viewMode === 'admin-stock') {
-    return (
-      <>
-        <AdminStockPage onBack={() => setViewMode('main')} />
-        <ToastContainer toasts={toasts} onRemove={removeToast} />
-      </>
-    );
-  }
 
   return (
     <>
-      <MainLayout
-        currentStep={currentStep}
-        onStepChange={handleStepChange}
-        projectName={customer.project_name}
-        canNavigate={results !== null}
-      >
-        {currentStep === 1 ? (
-          <StepPanels
-            panels={panels}
-            onPanelsChange={setPanels}
-            options={options}
-            onOptionsChange={setOptions}
-            customer={customer}
-            onCustomerChange={setCustomer}
-            onNext={handleOptimize}
-            onOpenAdminStock={() => setViewMode('admin-stock')}
-          />
-        ) : (
-          <StepResults
-            results={results}
-            requestData={requestData}
-            onBack={() => setCurrentStep(1)}
-            projectName={customer.project_name}
-            customerName={customer.customer_name}
-          />
-        )}
-
-        {isOptimizing && (
-          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 px-4">
-            <div className="bg-white rounded-xl p-6 sm:p-8 shadow-2xl w-full max-w-sm text-center">
-              <div className="animate-spin rounded-full h-14 w-14 border-b-4 border-orange-600 mx-auto mb-4"></div>
-              <p className="text-base sm:text-lg font-semibold text-gray-900">
-                Optimizing layout...
-              </p>
-              <p className="text-sm text-gray-500 mt-2">This may take a moment</p>
-            </div>
-          </div>
-        )}
+      <MainLayout currentView={view} onViewChange={setView} projectName={customer.project_name}>
+        {renderView()}
       </MainLayout>
+
+      {optimizing && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center">
+          <div className="text-center">
+            <div className="relative w-24 h-24 mx-auto mb-4">
+              <div className="absolute inset-0 border-4 border-amber-500/20 rounded-full" />
+              <div className="absolute inset-0 border-4 border-amber-500 border-t-transparent rounded-full animate-spin" />
+            </div>
+            <p className="text-xl font-display font-bold text-white">Optimizing Layout</p>
+            <p className="text-sm text-slate-400 mt-2">Computing best material arrangement...</p>
+          </div>
+        </div>
+      )}
 
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </>
   );
 }
-
-export default App;
