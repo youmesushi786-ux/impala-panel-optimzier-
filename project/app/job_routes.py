@@ -1,22 +1,45 @@
 from __future__ import annotations
 
 import json
-import logging
-from datetime import datetime
-from typing import Any, Dict
-
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import JobReport, BoardItem
-from app.job_service import deduct_stock
+from app.models import JobReport
+from app.job_service import confirm_job_and_update_stock
 
-logger = logging.getLogger("panelpro")
-router = APIRouter(tags=["jobs"])
+router = APIRouter(tags=["Job Management"])
 
 
-def _job_to_dict(job: JobReport) -> Dict[str, Any]:
+@router.get("/jobs")
+def list_jobs(status: Optional[str] = None, limit: int = Query(50, ge=1, le=500), offset: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    q = db.query(JobReport)
+    if status: q = q.filter(JobReport.status == status)
+    jobs = q.order_by(JobReport.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "jobs": [
+            {
+                "report_id": j.report_id,
+                "project_name": j.project_name,
+                "customer_name": j.customer_name,
+                "status": j.status,
+                "created_at": j.created_at.isoformat() if j.created_at else None,
+                "confirmed_at": j.confirmed_at.isoformat() if j.confirmed_at else None,
+                "total_boards_used": j.total_boards_used,
+                "total_offcuts_used": j.total_offcuts_used,
+                "total_offcuts_created": j.total_offcuts_created,
+                "efficiency_percent": j.efficiency_percent,
+            }
+            for j in jobs
+        ]
+    }
+
+
+@router.get("/jobs/{report_id}")
+def get_job(report_id: str, db: Session = Depends(get_db)):
+    job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
+    if not job: raise HTTPException(status_code=404, detail="Job report not found")
     return {
         "report_id": job.report_id,
         "project_name": job.project_name,
@@ -24,108 +47,45 @@ def _job_to_dict(job: JobReport) -> Dict[str, Any]:
         "status": job.status,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "confirmed_at": job.confirmed_at.isoformat() if job.confirmed_at else None,
+        "request": json.loads(job.request_json) if job.request_json else {},
+        "stock_impact": json.loads(job.stock_impact_json) if job.stock_impact_json else [],
+        "result_summary": json.loads(job.result_summary_json) if job.result_summary_json else {},
     }
 
 
-# ── List all jobs ────────────────────────────────────────
-@router.get("/jobs")
-def list_jobs(db: Session = Depends(get_db)) -> Dict[str, Any]:
-    jobs = db.query(JobReport).order_by(JobReport.created_at.desc()).all()
-    return {"jobs": [_job_to_dict(j) for j in jobs]}
-
-
-# ── Get single job ───────────────────────────────────────
-@router.get("/jobs/{report_id}")
-def get_job(report_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job report not found")
-
-    result = _job_to_dict(job)
-    result["stock_impact"] = json.loads(job.stock_impact_json) if job.stock_impact_json else []
-    return result
-
-
-# ──────────────────────────────────────────────────────────
-#  ★  THIS IS THE MISSING ROUTE THAT CAUSED THE 404  ★
-# ──────────────────────────────────────────────────────────
 @router.post("/jobs/confirm/{report_id}")
-def confirm_job(report_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """
-    Confirm an optimization job and deduct board stock.
-    Called when user clicks "Confirm Job & Deduct Stock".
-    """
-    job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job report not found")
-
-    if job.status == "confirmed":
-        raise HTTPException(status_code=400, detail="Job already confirmed")
-
-    if job.status == "cancelled":
-        raise HTTPException(status_code=400, detail="Cannot confirm a cancelled job")
-
-    # Parse the stored stock impact
-    stock_impact = []
-    if job.stock_impact_json:
-        try:
-            stock_impact = json.loads(job.stock_impact_json)
-        except json.JSONDecodeError:
-            logger.error(f"Bad stock_impact_json for {report_id}")
-
-    # Deduct stock from board inventory
-    deduction_results = []
-    if stock_impact:
-        deduction_results = deduct_stock(db, stock_impact)
-
-    # Mark job as confirmed
-    job.status = "confirmed"
-    job.confirmed_at = datetime.utcnow()
-    db.commit()
-    db.refresh(job)
-
-    logger.info(f"Job {report_id} confirmed — stock deducted")
-
-    return {
-        "status": "ok",
-        "report_id": report_id,
-        "message": "Job confirmed and stock deducted successfully",
-        "job": _job_to_dict(job),
-        "deductions": deduction_results,
-    }
+@router.post("/jobs/{report_id}/confirm")
+def confirm_job(report_id: str, db: Session = Depends(get_db)):
+    try:
+        job = confirm_job_and_update_stock(db, report_id)
+        return {
+            "status": "ok",
+            "report_id": report_id,
+            "message": "Job confirmed and stock updated successfully",
+            "job_status": job.status,
+            "confirmed_at": job.confirmed_at.isoformat(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
-# ── Cancel a job ─────────────────────────────────────────
 @router.post("/jobs/cancel/{report_id}")
-def cancel_job(report_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
+@router.post("/jobs/{report_id}/cancel")
+def cancel_job(report_id: str, db: Session = Depends(get_db)):
     job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job report not found")
-
-    if job.status == "confirmed":
-        raise HTTPException(status_code=400, detail="Cannot cancel a confirmed job")
+    if not job: raise HTTPException(status_code=404, detail="Job report not found")
+    if job.status == "confirmed": raise HTTPException(status_code=400, detail="Cannot cancel confirmed job")
 
     job.status = "cancelled"
+    job.cancelled_at = datetime.utcnow()
     db.commit()
-    db.refresh(job)
-    logger.info(f"Job {report_id} cancelled")
-
-    return {
-        "status": "ok",
-        "report_id": report_id,
-        "message": "Job cancelled",
-        "job": _job_to_dict(job),
-    }
+    return {"status": "ok", "report_id": report_id, "message": "Job cancelled"}
 
 
-# ── Delete a job ─────────────────────────────────────────
 @router.delete("/jobs/{report_id}")
-def delete_job(report_id: str, db: Session = Depends(get_db)) -> Dict[str, str]:
+def delete_job(report_id: str, db: Session = Depends(get_db)):
     job = db.query(JobReport).filter(JobReport.report_id == report_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job report not found")
-
+    if not job: raise HTTPException(status_code=404, detail="Job report not found")
     db.delete(job)
     db.commit()
-    logger.info(f"Job {report_id} deleted")
     return {"status": "deleted", "report_id": report_id}
