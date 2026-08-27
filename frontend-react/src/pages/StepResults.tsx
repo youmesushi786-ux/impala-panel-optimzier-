@@ -1,506 +1,199 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize2, X, Download, FileText, CheckCircle2, ArrowLeft, Layers3, DollarSign, QrCode, Package } from 'lucide-react';
 import { Card } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
+import { Badge } from '../components/ui/Badge';
 import { api } from '../api/client';
 
 interface Props {
   results: any;
   requestData: any;
   onBack: () => void;
-  projectName?: string;
-  customerName?: string;
 }
 
-export function StepResults({ results, requestData, onBack }: Props) {
-  const [confirming, setConfirming] = useState(false);
-  const [exportingReport, setExportingReport] = useState(false);
-  const [exportingLabels, setExportingLabels] = useState(false);
-  const [confirmMessage, setConfirmMessage] = useState('');
-  const [error, setError] = useState('');
+const TABS = [
+  { id: 'layout', label: 'Layouts', icon: Layers3 },
+  { id: 'boq', label: 'BOQ', icon: FileText },
+  { id: 'pricing', label: 'Pricing', icon: DollarSign },
+  { id: 'stickers', label: 'Stickers', icon: QrCode },
+  { id: 'stock', label: 'Stock Impact', icon: Package },
+];
 
-  const [showCuts, setShowCuts] = useState(true);
-  const [activeLayoutIndex, setActiveLayoutIndex] = useState(0);
+export function StepResults({ results, requestData, onBack }: Props) {
+  const [tab, setTab] = useState('layout');
+  const [layoutIdx, setLayoutIdx] = useState(0);
   const [zoom, setZoom] = useState(1);
+  const [showCuts, setShowCuts] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [exportReport, setExportReport] = useState(false);
+  const [exportLabels, setExportLabels] = useState(false);
 
   if (!results) return null;
 
   const layouts = results.layouts || [];
-  const activeLayout = layouts[activeLayoutIndex] || null;
-  const stickers = results.stickers || [];
+  const activeLayout = layouts[layoutIdx];
 
-  const downloadBlob = (blob: Blob, filename: string) => {
-    const url = window.URL.createObjectURL(blob);
+  const download = (blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    window.URL.revokeObjectURL(url);
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const handleExportReport = async () => {
-    try {
-      setExportingReport(true);
-      setError('');
-      const blob = await api.exportReportPdf(requestData);
-      downloadBlob(blob, 'optimization_report.pdf');
-    } catch (e: any) {
-      setError(e.message || 'Failed to export report');
-    } finally {
-      setExportingReport(false);
-    }
+  const handleReport = async () => {
+    setExportReport(true);
+    try { download(await api.exportReportPdf(requestData), 'report.pdf'); }
+    finally { setExportReport(false); }
   };
 
-  const handleExportLabels = async () => {
-    try {
-      setExportingLabels(true);
-      setError('');
-      const blob = await api.exportLabelsPdf(requestData);
-      downloadBlob(blob, 'panel_labels.pdf');
-    } catch (e: any) {
-      setError(e.message || 'Failed to export labels');
-    } finally {
-      setExportingLabels(false);
-    }
+  const handleLabels = async () => {
+    setExportLabels(true);
+    try { download(await api.exportLabelsPdf(requestData), 'labels.pdf'); }
+    finally { setExportLabels(false); }
   };
 
-  const handleConfirmJob = async () => {
-    try {
-      setConfirming(true);
-      setError('');
-      const response = await api.confirmJob(results.report_id);
-      setConfirmMessage(response.message);
-    } catch (e: any) {
-      setError(e.message || 'Failed to confirm job');
-    } finally {
-      setConfirming(false);
-    }
+  const handleConfirm = async () => {
+    setConfirming(true);
+    try { await api.confirmJob(results.report_id); }
+    finally { setConfirming(false); }
   };
 
-  const goPrevLayout = () => {
-    setActiveLayoutIndex((prev) => Math.max(prev - 1, 0));
-  };
-
-  const goNextLayout = () => {
-    setActiveLayoutIndex((prev) => Math.min(prev + 1, layouts.length - 1));
-  };
-
-  const zoomIn = () => setZoom((z) => Math.min(z + 0.2, 3));
-  const zoomOut = () => setZoom((z) => Math.max(z - 0.2, 0.4));
-  const resetZoom = () => setZoom(1);
-
-  const renderLayout = (layout: any, isFullscreen = false) => {
-    const boardWidth = Number(layout.board_width || 0);
-    const boardHeight = Number(layout.board_length || 0);
-
-    if (!boardWidth || !boardHeight) {
-      return (
-        <div className="p-4 border rounded-lg text-sm text-gray-500">
-          Invalid board size
-        </div>
-      );
-    }
-
-    const maxWidth = isFullscreen ? 1400 : 950;
-    const maxHeight = isFullscreen ? 850 : 520;
-    const baseScale = Math.min(maxWidth / boardWidth, maxHeight / boardHeight);
-    const scale = baseScale * zoom;
-
-    const renderWidth = boardWidth * scale;
-    const renderHeight = boardHeight * scale;
+  const renderLayout = (isFullscreen = false) => {
+    if (!activeLayout) return null;
+    const bw = activeLayout.board_width, bh = activeLayout.board_length;
+    const maxW = isFullscreen ? 1500 : 900, maxH = isFullscreen ? 900 : 550;
+    const scale = Math.min(maxW / bw, maxH / bh) * zoom;
 
     return (
-      <div className="overflow-auto border rounded-2xl bg-slate-50 p-4 shadow-inner">
-        <div className="mb-4 flex flex-wrap gap-4 text-sm text-gray-700">
-          <div className="font-semibold">Board #{layout.board_number}</div>
-          <div>{boardWidth} × {boardHeight} mm</div>
-          <div>Efficiency: {layout.efficiency_percent.toFixed(2)}%</div>
-          <div>Waste: {Math.round(layout.waste_area_mm2)} mm²</div>
-          <div>Panels: {layout.panel_count}</div>
-          <div>Zoom: {(zoom * 100).toFixed(0)}%</div>
-        </div>
-
-        <div
-          className="relative bg-white border-[3px] border-gray-900 shadow-md"
-          style={{
-            width: `${renderWidth}px`,
-            height: `${renderHeight}px`,
-          }}
-        >
-          <div className="absolute -top-8 left-1/2 -translate-x-1/2 text-xs font-semibold text-gray-700 bg-white px-2 py-1 rounded border">
-            {boardWidth} mm
-          </div>
-          <div className="absolute -left-12 top-1/2 -translate-y-1/2 -rotate-90 text-xs font-semibold text-gray-700 bg-white px-2 py-1 rounded border">
-            {boardHeight} mm
-          </div>
-
-          {layout.panels?.map((panel: any, idx: number) => {
-            const x = Number(panel.x || 0) * scale;
-            const y = Number(panel.y || 0) * scale;
-            const w = Number(panel.width || 0) * scale;
-            const h = Number(panel.length || 0) * scale;
-
-            const smallBox = w < 80 || h < 50;
-
+      <div className="overflow-auto p-6 bg-slate-950 rounded-xl border border-slate-800">
+        <div className="relative mx-auto bg-slate-900 border-2 border-amber-500/40 shadow-[0_0_40px_rgba(245,158,11,0.15)]" style={{ width: bw * scale, height: bh * scale }}>
+          {activeLayout.panels?.map((p: any, i: number) => (
+            <div key={i} className={`absolute overflow-hidden border rounded-sm transition-all hover:z-10 hover:shadow-[0_0_15px_rgba(6,182,212,0.5)] ${p.rotated ? 'bg-cyan-500/25 border-cyan-400 text-cyan-100' : 'bg-amber-500/25 border-amber-400 text-amber-100'}`}
+              style={{ left: p.x * scale, top: p.y * scale, width: Math.max(p.width * scale, 20), height: Math.max(p.length * scale, 20), padding: 3 }}
+              title={`${p.label || 'Panel'} ${p.width}×${p.length}`}>
+              <div className="text-[10px] font-bold font-mono truncate">{p.label || `P${i + 1}`}</div>
+              <div className="text-[9px] font-mono opacity-80">{Math.round(p.width)}×{Math.round(p.length)}</div>
+              {p.rotated && <div className="text-[8px] font-mono">↻ ROT</div>}
+            </div>
+          ))}
+          {showCuts && activeLayout.cuts?.map((c: any, i: number) => {
+            const isV = c.orientation === 'V';
             return (
-              <div
-                key={idx}
-                className={`absolute border rounded-sm shadow-sm overflow-hidden ${
-                  panel.rotated
-                    ? 'bg-blue-100 border-blue-600 text-blue-900'
-                    : 'bg-orange-100 border-orange-600 text-orange-900'
-                }`}
-                style={{
-                  left: `${x}px`,
-                  top: `${y}px`,
-                  width: `${Math.max(w, 18)}px`,
-                  height: `${Math.max(h, 18)}px`,
-                  padding: '4px',
-                  boxSizing: 'border-box',
-                }}
-                title={`${panel.label || `Panel ${panel.panel_index + 1}`} - ${panel.width} x ${panel.length}`}
-              >
-                <div className={`font-bold truncate ${smallBox ? 'text-[9px]' : 'text-[12px]'}`}>
-                  {panel.label || `P${panel.panel_index + 1}`}
-                </div>
-                <div className={`${smallBox ? 'text-[8px]' : 'text-[10px]'} truncate`}>
-                  {Math.round(panel.width)} × {Math.round(panel.length)}
-                </div>
-                <div className={`${smallBox ? 'text-[8px]' : 'text-[10px]'} font-medium`}>
-                  {panel.rotated ? 'Rotated' : 'Original'}
-                </div>
-              </div>
+              <div key={i} className="absolute pointer-events-none" style={{
+                left: Math.min(c.x1, c.x2) * scale, top: Math.min(c.y1, c.y2) * scale,
+                width: isV ? 2 : Math.abs(c.x2 - c.x1) * scale,
+                height: isV ? Math.abs(c.y2 - c.y1) * scale : 2,
+                backgroundColor: '#EF4444', boxShadow: '0 0 8px rgba(239,68,68,0.6)',
+              }} />
             );
           })}
-
-          {showCuts &&
-            layout.cuts?.map((cut: any, idx: number) => {
-              const x1 = Number(cut.x1 || 0) * scale;
-              const y1 = Number(cut.y1 || 0) * scale;
-              const x2 = Number(cut.x2 || 0) * scale;
-              const y2 = Number(cut.y2 || 0) * scale;
-              const isVertical = cut.orientation === 'V';
-
-              return (
-                <div key={`cut-${idx}`}>
-                  <div
-                    className="absolute pointer-events-none"
-                    style={{
-                      left: `${Math.min(x1, x2)}px`,
-                      top: `${Math.min(y1, y2)}px`,
-                      width: isVertical ? '2px' : `${Math.abs(x2 - x1)}px`,
-                      height: isVertical ? `${Math.abs(y2 - y1)}px` : '2px',
-                      backgroundColor: '#111827',
-                      opacity: 0.9,
-                    }}
-                  />
-                  <div
-                    className="absolute bg-gray-900 text-white text-[9px] px-1 py-[1px] rounded pointer-events-none"
-                    style={{
-                      left: `${Math.min(x1, x2) + 4}px`,
-                      top: `${Math.min(y1, y2) + 4}px`,
-                    }}
-                  >
-                    {cut.sequence || cut.id}
-                  </div>
-                </div>
-              );
-            })}
         </div>
       </div>
     );
   };
 
   return (
-    <div className="p-6 max-w-[1900px] mx-auto space-y-6">
-      <div className="flex justify-between gap-4 flex-wrap">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1800px] mx-auto space-y-6">
+      {/* Header */}
+      <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
         <div>
-          <h1 className="text-4xl font-bold text-gray-900">Optimization Results</h1>
-          <p className="text-gray-600 mt-2">
-            Project: <strong>{results.request_summary?.project_name}</strong> • Customer:{' '}
-            <strong>{results.request_summary?.customer_name}</strong>
-          </p>
-          <p className="text-gray-500 mt-1 text-sm">Report ID: {results.report_id}</p>
+          <Button variant="ghost" size="sm" leftIcon={<ArrowLeft className="w-4 h-4" />} onClick={onBack} className="mb-3">Back</Button>
+          <h1 className="text-3xl sm:text-4xl font-display font-bold">Optimization Report</h1>
+          <div className="flex flex-wrap items-center gap-2 mt-2 text-sm text-slate-400">
+            <Badge variant="cyan" size="sm">{results.report_id}</Badge>
+            <span>•</span>
+            <span>{results.request_summary?.project_name}</span>
+            <span>•</span>
+            <span>{results.request_summary?.customer_name}</span>
+          </div>
         </div>
-
-        <div className="flex gap-3 flex-wrap">
-          <Button variant="outline" onClick={onBack}>Back</Button>
-          <Button variant="outline" onClick={handleExportReport}>
-            {exportingReport ? 'Exporting Report...' : 'Print / Save PDF'}
-          </Button>
-          <Button variant="outline" onClick={handleExportLabels}>
-            {exportingLabels ? 'Exporting Labels...' : 'Export Labels PDF'}
-          </Button>
-          <Button onClick={handleConfirmJob}>
-            {confirming ? 'Confirming...' : 'Confirm Job & Deduct Stock'}
-          </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" leftIcon={<Download className="w-4 h-4" />} isLoading={exportReport} onClick={handleReport}>Report PDF</Button>
+          <Button variant="outline" size="sm" leftIcon={<QrCode className="w-4 h-4" />} isLoading={exportLabels} onClick={handleLabels}>Labels PDF</Button>
+          <Button size="sm" leftIcon={<CheckCircle2 className="w-4 h-4" />} isLoading={confirming} onClick={handleConfirm}>Confirm & Deduct</Button>
         </div>
       </div>
 
-      {results.stock_impact?.length === 0 && (
-        <div className="p-3 rounded border border-red-200 bg-red-50 text-red-700">
-          No stock impact found for this job.
-        </div>
-      )}
+      {/* KPIs */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[
+          { label: 'Boards Used', value: results.optimization.total_boards, color: 'amber', unit: 'sheets' },
+          { label: 'Panels Cut', value: results.optimization.total_panels, color: 'cyan', unit: 'pieces' },
+          { label: 'Waste', value: `${results.optimization.total_waste_percent.toFixed(1)}%`, color: 'rose', unit: 'material' },
+          { label: 'Edge Banding', value: `${results.optimization.total_edging_meters.toFixed(1)}m`, color: 'emerald', unit: 'total' },
+        ].map((k) => (
+          <Card key={k.label} variant="glass" glow={k.color as any} className="!p-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">{k.label}</p>
+              <Badge variant={k.color as any} size="sm">{k.unit}</Badge>
+            </div>
+            <p className={`text-3xl font-mono font-bold text-${k.color}-400`}>{k.value}</p>
+          </Card>
+        ))}
+      </div>
 
-      {confirmMessage && (
-        <div className="p-3 rounded border border-green-200 bg-green-50 text-green-700">
-          {confirmMessage}
-        </div>
-      )}
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-slate-800 overflow-x-auto">
+        {TABS.map((t) => {
+          const Icon = t.icon;
+          return (
+            <button key={t.id} onClick={() => setTab(t.id)} className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold whitespace-nowrap transition-all border-b-2 ${
+              tab === t.id ? 'text-amber-400 border-amber-400' : 'text-slate-400 border-transparent hover:text-white'
+            }`}>
+              <Icon className="w-4 h-4" />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
 
-      {error && (
-        <div className="p-3 rounded border border-red-200 bg-red-50 text-red-700">
-          {error}
-        </div>
-      )}
+      {/* LAYOUT TAB */}
+      {tab === 'layout' && activeLayout && (
+        <Card variant="glass">
+          <div className="flex flex-wrap items-center gap-2 mb-4">
+            <Button variant="outline" size="sm" leftIcon={<ChevronLeft className="w-4 h-4" />} onClick={() => setLayoutIdx(Math.max(0, layoutIdx - 1))} disabled={layoutIdx === 0}>Prev</Button>
+            <Badge variant="amber" size="lg">Board {layoutIdx + 1} of {layouts.length}</Badge>
+            <Button variant="outline" size="sm" rightIcon={<ChevronRight className="w-4 h-4" />} onClick={() => setLayoutIdx(Math.min(layouts.length - 1, layoutIdx + 1))} disabled={layoutIdx === layouts.length - 1}>Next</Button>
+            <div className="flex-1" />
+            <Button variant="ghost" size="sm" onClick={() => setZoom(Math.max(0.4, zoom - 0.2))}><ZoomOut className="w-4 h-4" /></Button>
+            <span className="text-xs font-mono text-slate-400 px-2">{Math.round(zoom * 100)}%</span>
+            <Button variant="ghost" size="sm" onClick={() => setZoom(Math.min(3, zoom + 0.2))}><ZoomIn className="w-4 h-4" /></Button>
+            <Button variant="outline" size="sm" onClick={() => setShowCuts(!showCuts)}>{showCuts ? 'Hide' : 'Show'} Cuts</Button>
+            <Button variant="outline" size="sm" leftIcon={<Maximize2 className="w-4 h-4" />} onClick={() => setFullscreen(true)}>Fullscreen</Button>
+          </div>
 
-      <Card title="Optimization Summary" hover>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="p-4 rounded bg-blue-50">
-            <div className="text-sm text-blue-700">Boards Used</div>
-            <div className="text-2xl font-bold">{results.optimization.total_boards}</div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4 text-xs font-mono">
+            <div className="p-2 rounded bg-slate-900/60"><span className="text-slate-500">Size:</span> {activeLayout.board_width}×{activeLayout.board_length}</div>
+            <div className="p-2 rounded bg-slate-900/60"><span className="text-slate-500">Efficiency:</span> <span className="text-emerald-400">{activeLayout.efficiency_percent.toFixed(1)}%</span></div>
+            <div className="p-2 rounded bg-slate-900/60"><span className="text-slate-500">Panels:</span> {activeLayout.panel_count}</div>
+            <div className="p-2 rounded bg-slate-900/60"><span className="text-slate-500">Waste:</span> {Math.round(activeLayout.waste_area_mm2)}mm²</div>
           </div>
-          <div className="p-4 rounded bg-green-50">
-            <div className="text-sm text-green-700">Total Panels</div>
-            <div className="text-2xl font-bold">{results.optimization.total_panels}</div>
-          </div>
-          <div className="p-4 rounded bg-amber-50">
-            <div className="text-sm text-amber-700">Waste %</div>
-            <div className="text-2xl font-bold">{results.optimization.total_waste_percent.toFixed(2)}%</div>
-          </div>
-          <div className="p-4 rounded bg-purple-50">
-            <div className="text-sm text-purple-700">Edging</div>
-            <div className="text-2xl font-bold">{results.optimization.total_edging_meters.toFixed(2)} m</div>
-          </div>
-        </div>
-      </Card>
 
-      <Card title="Sticker Tracking / QR Links" hover>
-        {stickers.length === 0 ? (
-          <p className="text-gray-500">No stickers generated.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-3 py-2 text-left">Serial</th>
-                  <th className="px-3 py-2 text-left">Panel</th>
-                  <th className="px-3 py-2 text-left">Board</th>
-                  <th className="px-3 py-2 text-left">QR Link</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stickers.map((sticker: any, idx: number) => (
-                  <tr key={idx} className="border-b border-gray-100">
-                    <td className="px-3 py-2">{sticker.serial_number}</td>
-                    <td className="px-3 py-2">{sticker.panel_label}</td>
-                    <td className="px-3 py-2">{sticker.board_number}</td>
-                    <td className="px-3 py-2">
-                      {sticker.qr_url ? (
-                        <a
-                          href={sticker.qr_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-blue-600 underline break-all"
-                        >
-                          Open Tracking
-                        </a>
-                      ) : (
-                        <span className="text-gray-500">No QR URL</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
-
-      {results.stock_impact?.length > 0 && (
-        <Card title="Stock Impact" hover>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-3 py-2 text-left">Board</th>
-                  <th className="px-3 py-2 text-left">Current</th>
-                  <th className="px-3 py-2 text-left">Required</th>
-                  <th className="px-3 py-2 text-left">Projected</th>
-                  <th className="px-3 py-2 text-left">Price</th>
-                  <th className="px-3 py-2 text-left">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {results.stock_impact.map((row: any, idx: number) => (
-                  <tr key={idx} className="border-b border-gray-100">
-                    <td className="px-3 py-2">{row.board_label}</td>
-                    <td className="px-3 py-2">{row.current_quantity}</td>
-                    <td className="px-3 py-2">{row.required_quantity}</td>
-                    <td className="px-3 py-2">{row.projected_balance}</td>
-                    <td className="px-3 py-2">{row.price_per_board}</td>
-                    <td className="px-3 py-2">{row.stock_status}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {renderLayout()}
         </Card>
       )}
 
-      <Card title="2D Cutting Layout Viewer" hover>
-        {layouts.length > 0 && (
-          <>
-            <div className="flex flex-wrap items-center gap-3 mb-4">
-              <Button variant="outline" size="sm" onClick={goPrevLayout} disabled={activeLayoutIndex === 0}>
-                Previous
-              </Button>
-
-              <div className="px-3 py-2 rounded-lg bg-gray-100 text-sm font-medium">
-                Board {activeLayoutIndex + 1} of {layouts.length}
-              </div>
-
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={goNextLayout}
-                disabled={activeLayoutIndex === layouts.length - 1}
-              >
-                Next
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={() => setShowCuts(!showCuts)}>
-                {showCuts ? 'Hide Cuts' : 'Show Cuts'}
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={zoomOut}>
-                Zoom -
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={resetZoom}>
-                Reset Zoom
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={zoomIn}>
-                Zoom +
-              </Button>
-
-              <Button variant="outline" size="sm" onClick={() => setFullscreen(true)}>
-                Fullscreen
-              </Button>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-4">
-              {layouts.map((layout: any, idx: number) => (
-                <button
-                  key={layout.board_number}
-                  type="button"
-                  onClick={() => setActiveLayoutIndex(idx)}
-                  className={`px-3 py-1 rounded-lg text-sm border ${
-                    idx === activeLayoutIndex
-                      ? 'bg-orange-600 text-white border-orange-600'
-                      : 'bg-white text-gray-700 border-gray-300'
-                  }`}
-                >
-                  #{layout.board_number}
-                </button>
-              ))}
-            </div>
-
-            {activeLayout && (
-              <div className="space-y-4 border rounded-xl p-4">
-                {renderLayout(activeLayout)}
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm border-collapse">
-                    <thead className="bg-gray-50 border-b">
-                      <tr>
-                        <th className="px-3 py-2 text-left">#</th>
-                        <th className="px-3 py-2 text-left">Label</th>
-                        <th className="px-3 py-2 text-left">Size</th>
-                        <th className="px-3 py-2 text-left">Rotated</th>
-                        <th className="px-3 py-2 text-left">Position</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {activeLayout.panels.map((panel: any, idx: number) => (
-                        <tr key={idx} className="border-b border-gray-100">
-                          <td className="px-3 py-2">{idx + 1}</td>
-                          <td className="px-3 py-2">{panel.label || `Panel ${panel.panel_index + 1}`}</td>
-                          <td className="px-3 py-2">{panel.width} × {panel.length}</td>
-                          <td className="px-3 py-2">{panel.rotated ? 'Yes' : 'No'}</td>
-                          <td className="px-3 py-2">({panel.x}, {panel.y})</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {activeLayout.cuts?.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900 mb-3">
-                      How to Cut — Board #{activeLayout.board_number}
-                    </h3>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm border-collapse">
-                        <thead className="bg-gray-50 border-b">
-                          <tr>
-                            <th className="px-3 py-2 text-left">Step</th>
-                            <th className="px-3 py-2 text-left">Orientation</th>
-                            <th className="px-3 py-2 text-left">Start</th>
-                            <th className="px-3 py-2 text-left">End</th>
-                            <th className="px-3 py-2 text-left">Length (mm)</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {activeLayout.cuts.map((cut: any, idx: number) => (
-                            <tr key={idx} className="border-b border-gray-100">
-                              <td className="px-3 py-2 font-semibold">{cut.sequence || cut.id}</td>
-                              <td className="px-3 py-2">{cut.orientation === 'V' ? 'Vertical' : 'Horizontal'}</td>
-                              <td className="px-3 py-2">({cut.x1}, {cut.y1})</td>
-                              <td className="px-3 py-2">({cut.x2}, {cut.y2})</td>
-                              <td className="px-3 py-2">{cut.length}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
-      </Card>
-
-      {results.boq?.items?.length > 0 && (
-        <Card title="BOQ Items" hover>
+      {/* BOQ TAB */}
+      {tab === 'boq' && results.boq?.items?.length > 0 && (
+        <Card variant="glass" title="Bill of Quantities">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-3 py-2 text-left">#</th>
-                  <th className="px-3 py-2 text-left">Description</th>
-                  <th className="px-3 py-2 text-left">Size</th>
-                  <th className="px-3 py-2 text-left">Qty</th>
-                  <th className="px-3 py-2 text-left">Unit</th>
-                  <th className="px-3 py-2 text-left">Edges</th>
-                  <th className="px-3 py-2 text-left">Material</th>
+            <table className="w-full text-sm">
+              <thead className="border-b border-slate-800">
+                <tr className="text-left text-xs uppercase text-slate-500">
+                  {['#', 'Description', 'Size', 'Qty', 'Unit', 'Edges', 'Material'].map((h) => <th key={h} className="p-3 font-semibold">{h}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {results.boq.items.map((item: any) => (
-                  <tr key={item.item_no} className="border-b border-gray-100">
-                    <td className="px-3 py-2">{item.item_no}</td>
-                    <td className="px-3 py-2">{item.description}</td>
-                    <td className="px-3 py-2">{item.size}</td>
-                    <td className="px-3 py-2">{item.quantity}</td>
-                    <td className="px-3 py-2">{item.unit}</td>
-                    <td className="px-3 py-2">{item.edges}</td>
-                    <td className="px-3 py-2">
-                      {item.board_type || item.core_type} {item.thickness_mm}mm {item.company} {item.colour}
-                    </td>
+                  <tr key={item.item_no} className="border-b border-slate-800/60 hover:bg-slate-800/30">
+                    <td className="p-3 font-mono text-amber-400">{item.item_no}</td>
+                    <td className="p-3 font-semibold">{item.description}</td>
+                    <td className="p-3 font-mono text-slate-400">{item.size}</td>
+                    <td className="p-3 font-mono">{item.quantity}</td>
+                    <td className="p-3 text-slate-400">{item.unit}</td>
+                    <td className="p-3"><Badge variant="emerald" size="sm">{item.edges}</Badge></td>
+                    <td className="p-3 text-xs text-slate-400">{item.board_type} {item.thickness_mm}mm {item.colour}</td>
                   </tr>
                 ))}
               </tbody>
@@ -509,101 +202,95 @@ export function StepResults({ results, requestData, onBack }: Props) {
         </Card>
       )}
 
-      {results.boq?.pricing?.lines?.length > 0 && (
-        <Card title="Pricing Summary" hover>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse mb-4">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-3 py-2 text-left">Item</th>
-                  <th className="px-3 py-2 text-left">Description</th>
-                  <th className="px-3 py-2 text-left">Qty</th>
-                  <th className="px-3 py-2 text-left">Unit</th>
-                  <th className="px-3 py-2 text-left">Unit Price</th>
-                  <th className="px-3 py-2 text-left">Amount</th>
+      {/* PRICING TAB */}
+      {tab === 'pricing' && results.boq?.pricing && (
+        <Card variant="glass" title="Pricing Summary">
+          <div className="overflow-x-auto mb-6">
+            <table className="w-full text-sm">
+              <thead className="border-b border-slate-800">
+                <tr className="text-left text-xs uppercase text-slate-500">
+                  {['Item', 'Description', 'Qty', 'Unit', 'Unit Price', 'Amount'].map((h) => <th key={h} className="p-3">{h}</th>)}
                 </tr>
               </thead>
               <tbody>
-                {results.boq.pricing.lines.map((line: any, idx: number) => (
-                  <tr key={idx} className="border-b border-gray-100">
-                    <td className="px-3 py-2">{line.item}</td>
-                    <td className="px-3 py-2">{line.description}</td>
-                    <td className="px-3 py-2">{line.quantity}</td>
-                    <td className="px-3 py-2">{line.unit}</td>
-                    <td className="px-3 py-2">{line.unit_price}</td>
-                    <td className="px-3 py-2">{line.amount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="p-4 rounded bg-gray-50">
-                <div className="text-sm text-gray-600">Subtotal</div>
-                <div className="text-xl font-bold">{results.boq.pricing.subtotal}</div>
-              </div>
-              <div className="p-4 rounded bg-gray-50">
-                <div className="text-sm text-gray-600">{results.boq.pricing.tax_name}</div>
-                <div className="text-xl font-bold">{results.boq.pricing.tax_amount}</div>
-              </div>
-              <div className="p-4 rounded bg-gray-50">
-                <div className="text-sm text-gray-600">Total</div>
-                <div className="text-xl font-bold">{results.boq.pricing.total}</div>
-              </div>
-              <div className="p-4 rounded bg-gray-50">
-                <div className="text-sm text-gray-600">Currency</div>
-                <div className="text-xl font-bold">{results.boq.pricing.currency}</div>
-              </div>
-            </div>
-          </div>
-        </Card>
-      )}
-
-      {results.edging?.details?.length > 0 && (
-        <Card title="Edging Details" hover>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead className="bg-gray-50 border-b">
-                <tr>
-                  <th className="px-3 py-2 text-left">Panel</th>
-                  <th className="px-3 py-2 text-left">Qty</th>
-                  <th className="px-3 py-2 text-left">Edge / Panel (m)</th>
-                  <th className="px-3 py-2 text-left">Total Edge (m)</th>
-                  <th className="px-3 py-2 text-left">Applied Edges</th>
-                </tr>
-              </thead>
-              <tbody>
-                {results.edging.details.map((row: any, idx: number) => (
-                  <tr key={idx} className="border-b border-gray-100">
-                    <td className="px-3 py-2">{row.panel_label}</td>
-                    <td className="px-3 py-2">{row.quantity}</td>
-                    <td className="px-3 py-2">{row.edge_per_panel_m}</td>
-                    <td className="px-3 py-2">{row.total_edge_m}</td>
-                    <td className="px-3 py-2">{row.edges_applied}</td>
+                {results.boq.pricing.lines?.map((l: any, i: number) => (
+                  <tr key={i} className="border-b border-slate-800/60">
+                    <td className="p-3 font-mono">{l.item}</td>
+                    <td className="p-3">{l.description}</td>
+                    <td className="p-3 font-mono">{l.quantity}</td>
+                    <td className="p-3 text-slate-400">{l.unit}</td>
+                    <td className="p-3 font-mono text-amber-400">{l.unit_price}</td>
+                    <td className="p-3 font-mono font-bold">{l.amount}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card variant="terminal" className="!p-4"><p className="text-[10px] uppercase text-slate-500">Subtotal</p><p className="text-2xl font-mono font-bold">{results.boq.pricing.subtotal}</p></Card>
+            <Card variant="terminal" className="!p-4"><p className="text-[10px] uppercase text-slate-500">{results.boq.pricing.tax_name}</p><p className="text-2xl font-mono font-bold text-cyan-400">{results.boq.pricing.tax_amount}</p></Card>
+            <Card variant="terminal" className="!p-4"><p className="text-[10px] uppercase text-slate-500">Total</p><p className="text-2xl font-mono font-bold text-amber-400">{results.boq.pricing.total}</p></Card>
+            <Card variant="terminal" className="!p-4"><p className="text-[10px] uppercase text-slate-500">Currency</p><p className="text-2xl font-mono font-bold">{results.boq.pricing.currency}</p></Card>
+          </div>
         </Card>
       )}
 
-      {fullscreen && activeLayout && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-[95vw] h-[95vh] overflow-auto p-4 shadow-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-2xl font-bold text-gray-900">
-                Fullscreen Board #{activeLayout.board_number}
-              </h2>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={zoomOut}>Zoom -</Button>
-                <Button variant="outline" size="sm" onClick={resetZoom}>Reset</Button>
-                <Button variant="outline" size="sm" onClick={zoomIn}>Zoom +</Button>
-                <Button onClick={() => setFullscreen(false)}>Close</Button>
+      {/* STICKERS TAB */}
+      {tab === 'stickers' && (
+        <Card variant="glass" title="Sticker Tracking">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {results.stickers?.map((s: any, i: number) => (
+              <div key={i} className="p-4 rounded-xl bg-slate-800/40 border border-slate-700 hover:border-amber-500/40 transition">
+                <div className="flex items-center justify-between mb-2">
+                  <Badge variant="cyan" size="sm">Board {s.board_number}</Badge>
+                  <QrCode className="w-5 h-5 text-slate-500" />
+                </div>
+                <p className="text-xs font-mono text-slate-500 mb-1">{s.serial_number}</p>
+                <p className="text-sm font-semibold">{s.panel_label}</p>
+                {s.qr_url && (
+                  <a href={s.qr_url} target="_blank" rel="noreferrer" className="text-xs text-amber-400 hover:underline mt-2 inline-block">Open tracking →</a>
+                )}
               </div>
-            </div>
-            {renderLayout(activeLayout, true)}
+            ))}
           </div>
+        </Card>
+      )}
+
+      {/* STOCK IMPACT TAB */}
+      {tab === 'stock' && results.stock_impact?.length > 0 && (
+        <Card variant="glass" title="Stock Impact Analysis">
+          <div className="space-y-2">
+            {results.stock_impact.map((s: any, i: number) => {
+              const critical = s.projected_balance < 0;
+              return (
+                <div key={i} className={`p-4 rounded-xl border ${critical ? 'bg-rose-500/10 border-rose-500/40' : 'bg-slate-800/40 border-slate-700'}`}>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-semibold">{s.board_label}</p>
+                      <p className="text-xs text-slate-400 font-mono mt-1">${s.price_per_board}/board</p>
+                    </div>
+                    <div className="flex items-center gap-4 font-mono text-sm">
+                      <div><p className="text-[10px] text-slate-500 uppercase">Current</p><p className="font-bold">{s.current_quantity}</p></div>
+                      <div><p className="text-[10px] text-slate-500 uppercase">Need</p><p className="font-bold text-amber-400">-{s.required_quantity}</p></div>
+                      <div><p className="text-[10px] text-slate-500 uppercase">After</p><p className={`font-bold ${critical ? 'text-rose-400' : 'text-emerald-400'}`}>{s.projected_balance}</p></div>
+                      <Badge variant={critical ? 'rose' : 'emerald'} pulse={critical}>{s.stock_status}</Badge>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {/* FULLSCREEN */}
+      {fullscreen && (
+        <div className="fixed inset-0 z-50 bg-black/95 backdrop-blur-lg p-4 flex flex-col">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-2xl font-display font-bold">Board #{activeLayout.board_number}</h2>
+            <Button variant="ghost" onClick={() => setFullscreen(false)} leftIcon={<X className="w-5 h-5" />}>Close</Button>
+          </div>
+          <div className="flex-1 overflow-auto">{renderLayout(true)}</div>
         </div>
       )}
     </div>
