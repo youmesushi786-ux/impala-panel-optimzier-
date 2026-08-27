@@ -1,120 +1,84 @@
 from __future__ import annotations
 
+import logging
+from typing import List, Dict, Any, Optional
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import asc
 
-from .models import BoardItem, StockTransaction
+from app.models import BoardItem, OffcutItem, JobStockMovement
+from app.schemas import StockImpactSummary, StockImpactItem, OffcutUsedItem, OffcutCreatedItem
+
+logger = logging.getLogger("panelpro")
 
 
-def get_stock_status(quantity: int, low_stock_threshold: int) -> str:
-    if quantity <= 0:
-        return "out_of_stock"
-    if quantity <= low_stock_threshold:
-        return "low_stock"
-    return "in_stock"
+def list_board_items(db: Session) -> List[BoardItem]:
+    return db.query(BoardItem).filter(BoardItem.is_active.is_(True)).order_by(
+        asc(BoardItem.board_type), asc(BoardItem.thickness_mm), asc(BoardItem.company), asc(BoardItem.color_name)
+    ).all()
 
 
-def list_board_items(db: Session):
-    return (
-        db.query(BoardItem)
-        .order_by(
-            asc(BoardItem.board_type),
-            asc(BoardItem.thickness_mm),
-            asc(BoardItem.company),
-            asc(BoardItem.color_name),
+def list_available_offcuts(db: Session, board_type: Optional[str] = None, thickness_mm: Optional[float] = None, color_name: Optional[str] = None) -> List[OffcutItem]:
+    q = db.query(OffcutItem).filter(OffcutItem.status == "available", OffcutItem.is_active.is_(True))
+    if board_type: q = q.filter(OffcutItem.board_type == board_type)
+    if thickness_mm: q = q.filter(OffcutItem.thickness_mm == thickness_mm)
+    if color_name: q = q.filter(OffcutItem.color_name == color_name)
+    return q.order_by(OffcutItem.created_at.asc()).all()
+
+
+def compute_stock_impact_from_selected_boards(
+    db: Session,
+    request,
+    layouts,
+    offcuts_used: List[OffcutUsedItem],
+    offcuts_to_create: List[OffcutCreatedItem],
+) -> StockImpactSummary:
+    full_sheet_layouts = [l for l in layouts if getattr(l, "source", "full_sheet") != "offcut"]
+    quantity_needed = len(full_sheet_layouts)
+
+    current_stock = 0
+    board_item_id = getattr(request.board, "board_item_id", None)
+    item = None
+
+    if board_item_id:
+        item = db.query(BoardItem).filter(BoardItem.id == board_item_id).first()
+    if not item:
+        item = db.query(BoardItem).filter(
+            BoardItem.board_type == request.board.board_type,
+            BoardItem.thickness_mm == request.board.thickness_mm,
+            BoardItem.color_name == request.board.color_name,
+            BoardItem.company == request.board.company,
+        ).first()
+
+    if item:
+        board_item_id = item.id
+        current_stock = item.quantity
+
+    stock_after = current_stock - quantity_needed
+
+    full_sheet_impact = [
+        StockImpactItem(
+            board_item_id=board_item_id,
+            board_type=request.board.board_type,
+            thickness_mm=request.board.thickness_mm,
+            color_name=request.board.color_name,
+            company=request.board.company,
+            width_mm=request.board.width_mm,
+            length_mm=request.board.length_mm,
+            price_per_board=request.board.price_per_board,
+            quantity_needed=quantity_needed,
+            current_stock=current_stock,
+            stock_after=max(stock_after, 0),
+            sufficient=stock_after >= 0,
         )
-        .all()
+    ]
+
+    saving = sum((o.width_mm * o.length_mm / (request.board.width_mm * request.board.length_mm)) * request.board.price_per_board for o in offcuts_used)
+
+    return StockImpactSummary(
+        full_sheets=full_sheet_impact,
+        offcuts_used=offcuts_used,
+        offcuts_to_create=offcuts_to_create,
+        estimated_material_saving=round(saving, 2),
+        warnings=[] if stock_after >= 0 else ["Insufficient full-sheet inventory in stock."]
     )
-
-
-def create_board_item(db: Session, data):
-    item = BoardItem(**data.model_dump())
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-
-    tx = StockTransaction(
-        board_item_id=item.id,
-        transaction_type="add",
-        quantity=item.quantity,
-        balance_before=0,
-        balance_after=item.quantity,
-        reference="INITIAL_STOCK",
-        notes="Initial stock entry",
-    )
-    db.add(tx)
-    db.commit()
-
-    return item
-
-
-def update_board_item(db: Session, item: BoardItem, data):
-    old_quantity = item.quantity
-    payload = data.model_dump(exclude_unset=True)
-
-    for key, value in payload.items():
-        setattr(item, key, value)
-
-    db.commit()
-    db.refresh(item)
-
-    if "quantity" in payload and payload["quantity"] != old_quantity:
-        tx = StockTransaction(
-            board_item_id=item.id,
-            transaction_type="adjust",
-            quantity=payload["quantity"] - old_quantity,
-            balance_before=old_quantity,
-            balance_after=payload["quantity"],
-            reference="MANUAL_ADJUSTMENT",
-            notes="Quantity adjusted manually by admin",
-        )
-        db.add(tx)
-        db.commit()
-
-    return item
-
-
-def add_stock(db: Session, item: BoardItem, quantity: int, reference: str | None = None, notes: str | None = None):
-    before = item.quantity
-    after = before + quantity
-    item.quantity = after
-    db.commit()
-    db.refresh(item)
-
-    tx = StockTransaction(
-        board_item_id=item.id,
-        transaction_type="add",
-        quantity=quantity,
-        balance_before=before,
-        balance_after=after,
-        reference=reference,
-        notes=notes,
-    )
-    db.add(tx)
-    db.commit()
-    return item
-
-
-def deduct_stock(db: Session, item: BoardItem, quantity: int, report_id: str | None = None, reference: str | None = None, notes: str | None = None):
-    if item.quantity < quantity:
-        raise ValueError(f"Insufficient stock for board item {item.id}")
-
-    before = item.quantity
-    after = before - quantity
-    item.quantity = after
-    db.commit()
-    db.refresh(item)
-
-    tx = StockTransaction(
-        board_item_id=item.id,
-        transaction_type="deduct",
-        quantity=quantity,
-        balance_before=before,
-        balance_after=after,
-        report_id=report_id,
-        reference=reference,
-        notes=notes,
-    )
-    db.add(tx)
-    db.commit()
-    return item
