@@ -14,249 +14,132 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from app.db import engine, get_db
-from app.models import Base, BoardItem, StickerTracking
+from app.models import Base, StickerTracking, OffcutItem
 from app.schemas import (
-    CuttingRequest,
-    CuttingResponse,
-    HealthResponse,
-    BOQSummary,
-    BOQItem,
-    StickerTrackingResponse,
+    CuttingRequest, CuttingResponse, HealthResponse,
+    BOQSummary, BOQItem, StickerTrackingResponse, OffcutSpec
 )
 from app.optimizer import run_optimization
 from app.pricing import calculate_pricing
-from app.config import (
-    CUTTING_PRICE_PER_BOARD,
-    EDGING_PRICE_PER_METER,
-)
+from app.config import CUTTING_PRICE_PER_BOARD, EDGING_PRICE_PER_METER
 from app.pdf_generator import generate_report_pdf, generate_labels_pdf
-from app.job_service import (
-    save_job_report,
-    aggregate_board_requirements_from_layouts,
-    compute_stock_impact_from_selected_boards,
-)
+from app.job_service import save_job_report
+from app.stock_service import compute_stock_impact_from_selected_boards
 from app.stock_routes import router as board_router
 from app.job_routes import router as job_router
 
-
-# ─────────────────────────────────────────────
-# Logging
-# ─────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger("panelpro")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-# ─────────────────────────────────────────────
-# FastAPI App
-# ─────────────────────────────────────────────
-app = FastAPI(title="PanelPro - Cutting Optimizer")
+app = FastAPI(title="PanelPro - Factory MES Optimizer")
 Base.metadata.create_all(bind=engine)
 
-# ─────────────────────────────────────────────
-# Static Files
-# ─────────────────────────────────────────────
 if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ─────────────────────────────────────────────
-# CORS
-# ─────────────────────────────────────────────
 origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "https://impala-panel-optimzier.onrender.com",
-    "https://impala-panel-optimzier-v1.onrender.com",
+    "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000",
+    "https://impala-panel-optimzier.onrender.com", "https://impala-panel-optimzier-v1.onrender.com"
 ]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-logger.info(f"CORS enabled for: {origins}")
-
-# ─────────────────────────────────────────────
-# Routers
-# ─────────────────────────────────────────────
 app.include_router(board_router, prefix="/api")
 app.include_router(job_router, prefix="/api")
 
 
-# ─────────────────────────────────────────────
-# Error Handler
-# ─────────────────────────────────────────────
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
-# ─────────────────────────────────────────────
-# Health
-# ─────────────────────────────────────────────
 @app.get("/health", response_model=HealthResponse)
 async def health():
     return HealthResponse(status="ok", timestamp=datetime.utcnow())
 
 
-# ─────────────────────────────────────────────
-# ✅ REMOVED duplicate /api/boards/catalog
-# It now lives in stock_routes.py
-# ─────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────
-# BOQ Builder
-# ─────────────────────────────────────────────
 def build_boq(request: CuttingRequest, optimization, edging, pricing) -> BOQSummary:
     items: list[BOQItem] = []
-
     for idx, p in enumerate(request.panels, start=1):
-        edges = "".join(
-            edge[0].upper()
-            for edge, flag in [
-                ("Top", p.edging.top),
-                ("Right", p.edging.right),
-                ("Bottom", p.edging.bottom),
-                ("Left", p.edging.left),
-            ]
-            if flag
-        ) or "None"
-
-        items.append(
-            BOQItem(
-                item_no=idx,
-                description=p.label or f"Panel {idx}",
-                size=f"{p.width}x{p.length} mm",
-                quantity=p.quantity,
-                unit="pcs",
-                edges=edges,
-                board_type=request.board.board_type,
-                thickness_mm=request.board.thickness_mm,
-                company=request.board.company,
-                colour=request.board.color_name,
-                material_amount=0.0,
-            )
-        )
-
-    return BOQSummary(
-        project_name=request.project_name,
-        customer_name=request.customer_name,
-        date=datetime.utcnow().strftime("%Y-%m-%d"),
-        items=items,
-        materials={},
-        services={},
-        pricing=pricing,
-    )
+        edges = "".join(edge[0].upper() for edge, flag in [("Top", p.edging.top), ("Right", p.edging.right), ("Bottom", p.edging.bottom), ("Left", p.edging.left)] if flag) or "None"
+        items.append(BOQItem(
+            item_no=idx, description=p.label or f"Panel {idx}", size=f"{p.width}x{p.length} mm",
+            quantity=p.quantity, unit="pcs", edges=edges, board_type=request.board.board_type,
+            thickness_mm=request.board.thickness_mm, company=request.board.company, colour=request.board.color_name, material_amount=0.0
+        ))
+    return BOQSummary(project_name=request.project_name, customer_name=request.customer_name, date=datetime.utcnow().strftime("%Y-%m-%d"), items=items, materials={}, services={}, pricing=pricing)
 
 
-# ─────────────────────────────────────────────
-# Optimize
-# ─────────────────────────────────────────────
 @app.post("/api/optimize", response_model=CuttingResponse)
-async def api_optimize(
-    req: CuttingRequest,
-    db: Session = Depends(get_db),
-) -> CuttingResponse:
-    boards, optimization, edging_summary, stickers = run_optimization(req)
+async def api_optimize(req: CuttingRequest, db: Session = Depends(get_db)) -> CuttingResponse:
+    # 1. AUTO-LOAD OFFCUTS FROM DB
+    if req.auto_load_offcuts_from_stock:
+        db_offcuts = db.query(OffcutItem).filter(
+            OffcutItem.status == "available", OffcutItem.is_active.is_(True),
+            OffcutItem.board_type == req.board.board_type, OffcutItem.thickness_mm == req.board.thickness_mm,
+            OffcutItem.color_name == req.board.color_name
+        ).all()
+        req.available_offcuts = [
+            OffcutSpec(
+                offcut_id=o.id, offcut_code=o.offcut_code, board_type=o.board_type,
+                thickness_mm=o.thickness_mm, color_name=o.color_name, company=o.company,
+                width_mm=o.width_mm, length_mm=o.length_mm, location=o.location
+            ) for o in db_offcuts
+        ]
 
+    # 2. RUN 3-PHASE SMART OPTIMIZER (Unpacks all 6 values safely)
+    boards, optimization, edging_summary, stickers, offcuts_used, offcuts_to_create = run_optimization(req)
+
+    # 3. PRICING & BOQ
     pricing = calculate_pricing(req, optimization, edging_summary.total_meters)
     boq = build_boq(req, optimization, edging_summary, pricing)
+
+    # 4. COMPUTE RICH STOCK IMPACT
+    stock_impact_detail = compute_stock_impact_from_selected_boards(
+        db=db, request=req, layouts=boards, offcuts_used=offcuts_used, offcuts_to_create=offcuts_to_create
+    )
 
     report_id = f"RPT-{uuid4().hex[:10].upper()}"
-    request_json = req.model_dump()
 
-    board_requirements = aggregate_board_requirements_from_layouts(boards)
-    stock_impact = compute_stock_impact_from_selected_boards(db, board_requirements)
-
+    # 5. PERSIST JOB REPORT TO DB
     save_job_report(
-        db=db,
-        report_id=report_id,
-        request_json=request_json,
-        stock_impact=stock_impact,
+        db=db, report_id=report_id, request=req, stock_impact_detail=stock_impact_detail,
+        total_boards=optimization.total_boards, total_offcuts_used=optimization.total_offcuts_used,
+        total_offcuts_created=optimization.total_offcuts_created, efficiency_percent=optimization.overall_efficiency_percent
     )
+
+    # 6. SAVE STICKER LABELS TO DB
+    for s in stickers:
+        db.add(StickerTracking(serial_number=s.serial_number, report_id=report_id, panel_label=s.panel_label, board_number=s.board_number, qr_url=s.qr_url, status="in_store"))
+    db.commit()
 
     return CuttingResponse(
-        request_summary={
-            "project_name": req.project_name,
-            "customer_name": req.customer_name,
-            "total_panels": optimization.total_panels,
-        },
-        optimization=optimization,
-        layouts=boards,
-        edging=edging_summary,
-        boq=boq,
-        stickers=stickers,
-        stock_impact=stock_impact,
-        report_id=report_id,
-        generated_at=datetime.utcnow(),
+        report_id=report_id, generated_at=datetime.utcnow(),
+        request_summary={"project_name": req.project_name, "customer_name": req.customer_name, "total_panels": optimization.total_panels},
+        optimization=optimization, layouts=boards, edging=edging_summary, boq=boq, pricing=pricing,
+        stickers=stickers, stock_impact=stock_impact_detail.full_sheets, stock_impact_detail=stock_impact_detail,
+        offcuts_used=offcuts_used, offcuts_to_create=offcuts_to_create
     )
 
 
-# ─────────────────────────────────────────────
-# PDF Export
-# ─────────────────────────────────────────────
 @app.post("/api/optimize/report")
 async def export_report_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
-    boards, optimization, edging_summary, stickers = run_optimization(req)
+    boards, optimization, edging_summary, stickers, offcuts_used, offcuts_to_create = run_optimization(req)
     pricing = calculate_pricing(req, optimization, edging_summary.total_meters)
     boq = build_boq(req, optimization, edging_summary, pricing)
-
-    pdf_bytes = generate_report_pdf(
-        request=req,
-        layouts=boards,
-        optimization=optimization,
-        edging=edging_summary,
-        boq=boq,
-        stickers=stickers,
-        stock_impact=[],
-        report_id=f"RPT-{uuid4().hex[:10].upper()}",
-    )
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=report.pdf"},
-    )
+    pdf_bytes = generate_report_pdf(request=req, layouts=boards, optimization=optimization, edging=edging_summary, boq=boq, stickers=stickers, stock_impact=[], report_id=f"RPT-{uuid4().hex[:10].upper()}")
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=report.pdf"})
 
 
 @app.post("/api/optimize/labels")
 async def export_labels_pdf(req: CuttingRequest, db: Session = Depends(get_db)):
-    boards, optimization, edging_summary, stickers = run_optimization(req)
-
+    boards, optimization, edging_summary, stickers, offcuts_used, offcuts_to_create = run_optimization(req)
     pdf_bytes = generate_labels_pdf(stickers)
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=labels.pdf"},
-    )
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=labels.pdf"})
 
 
-# ─────────────────────────────────────────────
-# Tracking (No API Key)
-# ─────────────────────────────────────────────
 @app.get("/api/tracking/{serial_number}", response_model=StickerTrackingResponse)
 async def get_tracking(serial_number: str, db: Session = Depends(get_db)):
-    item = (
-        db.query(StickerTracking)
-        .filter(StickerTracking.serial_number == serial_number)
-        .first()
-    )
-    if not item:
-        raise HTTPException(status_code=404, detail="Tracking label not found")
-
-    return StickerTrackingResponse(
-        serial_number=item.serial_number,
-        report_id=item.report_id,
-        panel_label=item.panel_label,
-        status=item.status,
-        qr_url=item.qr_url,
-        updated_at=item.updated_at,
-        board_number=item.board_number,
-    )
+    item = db.query(StickerTracking).filter(StickerTracking.serial_number == serial_number).first()
+    if not item: raise HTTPException(status_code=404, detail="Tracking label not found")
+    return StickerTrackingResponse(serial_number=item.serial_number, report_id=item.report_id, panel_label=item.panel_label, status=item.status, qr_url=item.qr_url, updated_at=item.updated_at, board_number=item.board_number)
